@@ -1,0 +1,18 @@
+[package]
+name = "vozltop"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+description = "htop-like real-time TUI for nginx-module-vts"
+repository = "https://github.com/astail/vozltop"
+license = "MIT"
+readme = "README.md"
+keywords = ["nginx", "vts", "tui", "monitoring"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
