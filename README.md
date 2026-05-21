@@ -1,5 +1,7 @@
 # vozltop
 
+[![CI](https://github.com/astail/vozltop/actions/workflows/ci.yml/badge.svg)](https://github.com/astail/vozltop/actions/workflows/ci.yml)
+
 `htop`-like real-time TUI for [vozlt/nginx-module-vts](https://github.com/vozlt/nginx-module-vts).
 
 > ⚠️ **Status: pre-alpha.** Specification fixed, implementation in progress. See [docs/DESIGN.md](docs/DESIGN.md) and [CLAUDE.md](CLAUDE.md) for current state.
