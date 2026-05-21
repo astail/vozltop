@@ -1,0 +1,14 @@
+# Rust
+/target/
+**/*.rs.bk
+# Cargo.lock は binary crate なので commit する（cargo install / Releases の再現性確保）
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# MCP / tooling local state
+.serena/
+.claude/
