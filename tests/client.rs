@@ -17,14 +17,14 @@ use vozltop::client::VtsClient;
 /// `tokio::spawn` 内で `accept()` → リクエストを 1 件受けたら `response`
 /// バイト列をそのまま流して `close` する。HTTP/1.1 の最低限の構文 (status
 /// line + `Connection: close` + 空行 + body) だけ満たしている。
-async fn spawn_oneshot_server(response: &'static [u8]) -> Url {
+async fn spawn_oneshot_server(response: Vec<u8>) -> Url {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local_addr");
     tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.expect("accept");
         let mut buf = [0u8; 4096];
         let _ = socket.read(&mut buf).await;
-        socket.write_all(response).await.expect("write");
+        socket.write_all(&response).await.expect("write");
         socket.shutdown().await.ok();
     });
     format!("http://{addr}/status/format/json").parse().unwrap()
@@ -54,9 +54,7 @@ async fn fetch_decodes_200_response() {
         body.len(),
         body
     );
-    let response: &'static [u8] = Box::leak(response.into_bytes().into_boxed_slice());
-
-    let url = spawn_oneshot_server(response).await;
+    let url = spawn_oneshot_server(response.into_bytes()).await;
     let client = VtsClient::new(&args_for(url)).expect("client builds");
 
     let status = client.fetch().await.expect("fetch succeeds");
@@ -80,9 +78,7 @@ async fn fetch_decodes_when_content_type_is_not_json() {
         body.len(),
         body
     );
-    let response: &'static [u8] = Box::leak(response.into_bytes().into_boxed_slice());
-
-    let url = spawn_oneshot_server(response).await;
+    let url = spawn_oneshot_server(response.into_bytes()).await;
     let client = VtsClient::new(&args_for(url)).expect("client builds");
     let status = client.fetch().await.expect("decode ignores Content-Type");
     assert_eq!(status.host_name, "h");
@@ -96,9 +92,7 @@ async fn fetch_returns_err_on_non_2xx() {
         body.len(),
         body
     );
-    let response: &'static [u8] = Box::leak(response.into_bytes().into_boxed_slice());
-
-    let url = spawn_oneshot_server(response).await;
+    let url = spawn_oneshot_server(response.into_bytes()).await;
     let client = VtsClient::new(&args_for(url)).expect("client builds");
 
     let err = client.fetch().await.expect_err("404 should be Err");
@@ -117,9 +111,7 @@ async fn fetch_returns_err_on_invalid_json() {
         body.len(),
         body
     );
-    let response: &'static [u8] = Box::leak(response.into_bytes().into_boxed_slice());
-
-    let url = spawn_oneshot_server(response).await;
+    let url = spawn_oneshot_server(response.into_bytes()).await;
     let client = VtsClient::new(&args_for(url)).expect("client builds");
 
     let err = client

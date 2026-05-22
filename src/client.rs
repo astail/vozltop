@@ -77,6 +77,9 @@ impl VtsClient {
             ));
         }
 
+        // TODO(issue #41): レスポンスサイズ上限を導入する。現状 `response.text()`
+        // は body 全体をメモリに読み込むため、悪意ある (or バグった) リバースプロキシ
+        // が GB 級 body を返すと OOM する。
         let body = response
             .text()
             .await
