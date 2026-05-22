@@ -1,8 +1,9 @@
-//! issue #17 時点の最小バイナリエントリ。
+//! issue #17 で wiring 開始、issue #19 で App / FetchError 経路に置き換えた
+//! 最小バイナリエントリ。
 //!
-//! `cargo run -- <URL>` で `VtsClient` を 1 回回し、デコードした
-//! `VtsStatus` を `Debug` 出力する acceptance criteria 用の wiring。
-//! issue #25 で tokio::select! ループ + TUI 起動に置き換わる。
+//! `cargo run -- <URL>` で `VtsClient` を 1 回回し、結果を `App` に渡してから
+//! バナーと `VtsStatus` を `Debug` 出力する。issue #25 で tokio::select! ループ
+//! + TUI 起動に置き換わる。
 
 use std::env;
 use std::process::ExitCode;
@@ -11,6 +12,7 @@ use color_eyre::eyre::{eyre, Result, WrapErr};
 use url::Url;
 use vozltop::cli::Args;
 use vozltop::client::VtsClient;
+use vozltop::state::App;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -40,7 +42,19 @@ async fn run() -> Result<()> {
         insecure: false,
     };
     let client = VtsClient::new(&args)?;
-    let status = client.fetch().await?;
-    println!("{status:#?}");
+    let mut app = App::new();
+
+    match client.fetch().await {
+        Ok(status) => app.on_fetch_ok(status),
+        Err(err) => app.on_fetch_err(&err),
+    }
+
+    println!("[banner] {}", app.banner.label());
+    if app.restart_detected {
+        println!("[banner] nginx restart detected (nowMsec went backwards)");
+    }
+    if let Some(latest) = &app.latest {
+        println!("{latest:#?}");
+    }
     Ok(())
 }

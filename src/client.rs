@@ -1,13 +1,15 @@
 //! VTS `/status/format/json` を 1 回 fetch する HTTP クライアント。
 //!
 //! issue #17 で認証なし最小実装、issue #18 で `--user` / `--header` /
-//! `--insecure` を `Args` から拾うように拡張。
+//! `--insecure` を `Args` から拾うように拡張、issue #19 で `fetch` の戻り値
+//! 型を `Result<VtsStatus, FetchError>` に分類した。
 
+use std::fmt;
 use std::time::Duration;
 
-use color_eyre::eyre::{eyre, Result, WrapErr};
+use color_eyre::eyre::{Result, WrapErr};
 use reqwest::header::HeaderMap;
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use url::Url;
 
 use crate::cli::{self, Args};
@@ -93,51 +95,107 @@ impl VtsClient {
 
     /// 1 回だけ GET して `VtsStatus` にデコードする。
     ///
+    /// 戻り値は `Result<VtsStatus, FetchError>` で、エラーは
+    /// `Connect` / `Timeout` / `Status` / `Decode` に分類される。
+    /// 呼び出し側 (`state::App`) はこの分類と連続失敗カウンタで `Stale data` /
+    /// `Disconnected` バナーを切り替える (issue #19)。
+    ///
     /// 動作仕様:
-    /// - 2xx 以外は `Err` (HTTP コードとフレーズを含む)
+    /// - 2xx 以外は `FetchError::Status { code }`
     /// - body は **常に** `serde_json::from_str` を試みる
     ///   (`Content-Type` を見ない理由は、`add_header Content-Type` を雑に
     ///   設定している nginx 構成でも fetch を成功させたいから)
-    /// - JSON パース失敗時はデコード対象の先頭 200 バイトを Err メッセージに
-    ///   含めて debug を助ける
-    pub async fn fetch(&self) -> Result<VtsStatus> {
+    pub async fn fetch(&self) -> std::result::Result<VtsStatus, FetchError> {
         let mut req = self.http.get(self.url.clone());
         if let Some((user, pass)) = &self.basic_auth {
             req = req.basic_auth(user, Some(pass));
         }
 
-        let response = req
-            .send()
-            .await
-            .wrap_err_with(|| format!("HTTP request to {} failed", self.url))?;
+        let response = req.send().await?;
 
         let status = response.status();
         if !status.is_success() {
-            return Err(eyre!(
-                "HTTP {} {} from {}",
-                status.as_u16(),
-                status.canonical_reason().unwrap_or("(no reason phrase)"),
-                self.url
-            ));
+            return Err(FetchError::Status { code: status });
         }
 
         // TODO(issue #41): レスポンスサイズ上限を導入する。現状 `response.text()`
         // は body 全体をメモリに読み込むため、悪意ある (or バグった) リバースプロキシ
         // が GB 級 body を返すと OOM する。
-        let body = response
-            .text()
-            .await
-            .wrap_err("failed to read response body")?;
+        let body = response.text().await?;
 
-        serde_json::from_str::<VtsStatus>(&body).wrap_err_with(|| {
-            let preview: String = body.chars().take(200).collect();
-            format!(
-                "failed to decode VTS JSON from {} ({} bytes); first 200 chars: {:?}",
-                self.url,
-                body.len(),
-                preview
-            )
-        })
+        serde_json::from_str::<VtsStatus>(&body).map_err(FetchError::Decode)
+    }
+}
+
+/// fetch 1 回ぶんのエラー分類。
+///
+/// 連続失敗カウンタとバナー表示の切り替え判定に使う。`Display` 実装はバナー用
+/// の **短い** メッセージ (URL や secret を含まない) を返す。
+#[derive(Debug)]
+pub enum FetchError {
+    /// 名前解決、TCP 接続、TLS ハンドシェイク等の接続フェーズの失敗。transient。
+    Connect(reqwest::Error),
+    /// `connect_timeout` または `timeout` の超過。transient。
+    Timeout,
+    /// 非 2xx レスポンス。4xx は permanent 寄り、5xx は transient 寄り。
+    /// UI 上は両方とも失敗としてカウントする。
+    Status { code: StatusCode },
+    /// 200 が返ったが body を `VtsStatus` にデコードできなかった。
+    /// スキーマ不一致 (permanent) も nginx 半起動 (transient) もありうる。
+    Decode(serde_json::Error),
+}
+
+impl FetchError {
+    /// バナー / ステータスバーに表示する短いメッセージ。
+    ///
+    /// URL や user:pass を絶対に含めない (1 行ログに secret が漏れないように)。
+    pub fn banner_message(&self) -> String {
+        match self {
+            FetchError::Connect(_) => "connection failed".to_string(),
+            FetchError::Timeout => "request timed out".to_string(),
+            FetchError::Status { code } => match code.canonical_reason() {
+                Some(reason) => format!("HTTP {} {reason}", code.as_u16()),
+                None => format!("HTTP {}", code.as_u16()),
+            },
+            FetchError::Decode(_) => "invalid VTS JSON".to_string(),
+        }
+    }
+}
+
+impl fmt::Display for FetchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.banner_message())
+    }
+}
+
+impl std::error::Error for FetchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            FetchError::Connect(e) => Some(e),
+            FetchError::Decode(e) => Some(e),
+            FetchError::Timeout | FetchError::Status { .. } => None,
+        }
+    }
+}
+
+impl From<reqwest::Error> for FetchError {
+    fn from(err: reqwest::Error) -> Self {
+        // 分類順序は意図的: timeout は他フラグ (is_request など) と同時に
+        // true になりうるので最優先で見る。
+        if err.is_timeout() {
+            FetchError::Timeout
+        } else if err.is_status() {
+            // 通常 fetch() 内の `error_for_status` を経由しないので
+            // ここに到達することは稀。安全側でハンドリング。
+            match err.status() {
+                Some(code) => FetchError::Status { code },
+                None => FetchError::Connect(err),
+            }
+        } else {
+            // is_connect / is_request / is_body / is_decode (transport-level)
+            // などはすべて Connect 扱いで吸収する。
+            FetchError::Connect(err)
+        }
     }
 }
 

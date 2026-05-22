@@ -11,7 +11,7 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use url::Url;
 use vozltop::cli::Args;
-use vozltop::client::VtsClient;
+use vozltop::client::{FetchError, VtsClient};
 
 /// ワンショット HTTP サーバを立てて URL を返す。
 ///
@@ -129,12 +129,16 @@ async fn fetch_returns_err_on_non_2xx() {
     let url = spawn_oneshot_server(response.into_bytes()).await;
     let client = VtsClient::new(&args_for(url)).expect("client builds");
 
-    let err = client.fetch().await.expect_err("404 should be Err");
-    let msg = format!("{err:?}");
+    let err = match client.fetch().await {
+        Ok(_) => panic!("404 should be Err"),
+        Err(e) => e,
+    };
     assert!(
-        msg.contains("404"),
-        "error message should include 404: {msg}"
+        matches!(err, FetchError::Status { code } if code.as_u16() == 404),
+        "expected FetchError::Status(404), got {err:?}"
     );
+    // banner_message は URL/secret を含まないが status code は含む
+    assert!(err.banner_message().contains("404"));
 }
 
 #[tokio::test]
@@ -148,15 +152,15 @@ async fn fetch_returns_err_on_invalid_json() {
     let url = spawn_oneshot_server(response.into_bytes()).await;
     let client = VtsClient::new(&args_for(url)).expect("client builds");
 
-    let err = client
-        .fetch()
-        .await
-        .expect_err("non-JSON body should be Err");
-    let msg = format!("{err:?}");
+    let err = match client.fetch().await {
+        Ok(_) => panic!("non-JSON body should be Err"),
+        Err(e) => e,
+    };
     assert!(
-        msg.contains("decode VTS JSON"),
-        "error message should mention JSON decode failure: {msg}"
+        matches!(err, FetchError::Decode(_)),
+        "expected FetchError::Decode, got {err:?}"
     );
+    assert_eq!(err.banner_message(), "invalid VTS JSON");
 }
 
 #[tokio::test]
@@ -174,9 +178,14 @@ async fn fetch_returns_err_on_connection_refused() {
     // ハングしないことを保証する
     let fetched = tokio::time::timeout(Duration::from_secs(6), client.fetch()).await;
     let res = fetched.expect("test should not exceed 6s");
+    let err = match res {
+        Ok(_) => panic!("connect to a closed port should return Err"),
+        Err(e) => e,
+    };
+    // ECONNREFUSED は Connect、connect_timeout 経由なら Timeout のいずれか
     assert!(
-        res.is_err(),
-        "connect to a closed port should return Err, got {res:?}"
+        matches!(err, FetchError::Connect(_) | FetchError::Timeout),
+        "expected Connect or Timeout, got {err:?}"
     );
 }
 
