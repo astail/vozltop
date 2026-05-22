@@ -1,8 +1,9 @@
 # VTS JSON フィクスチャ
 
-`vozlt/nginx-module-vts` (以下 VTS) が公開する JSON は `tests/deserialize.rs` /
-`tests/derived.rs` などで「実 response を decode できること」を保証するために
-本ディレクトリへコミットしている。
+`vozlt/nginx-module-vts` (以下 VTS) が公開する JSON を、本 PR で追加する
+`tests/fixtures_smoke.rs` および将来追加予定の `tests/deserialize.rs`
+(issue #16) / `tests/derived.rs` (issue #23) で「実 response を decode できる
+こと」を保証するために本ディレクトリへコミットしている。
 
 **手書きしない**。再取得が必要になったときは `setup/` の Dockerfile と
 nginx.conf を使って下記手順を踏み、ホスト名や IP に個人情報・社内情報が
@@ -125,4 +126,5 @@ jq -r '{hostName, sv: (.serverZones|keys), up: ([.upstreamZones[][].server]|uniq
 - [ ] `with_histogram.json` の `requestBuckets.msecs` / `.counters` が同じ長さで
       `msecs` の要素が `nginx-with-histogram.conf` で指定したバケット秒×1000 (ms) と
       一致すること
-- [ ] `cargo test --test deserialize` が通ること
+- [ ] `cargo test --test fixtures_smoke` が通ること
+      (issue #16 マージ後は `cargo test --test deserialize` も同様に通る必要あり)

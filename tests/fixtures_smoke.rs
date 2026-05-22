@@ -88,7 +88,9 @@ fn with_histogram_buckets_are_integer_arrays() {
         );
     }
 
-    // nginx-with-histogram.conf で設定したバケット (秒) を ms に換算した値
+    // tests/fixtures/setup/nginx-with-histogram.conf の
+    // `vhost_traffic_status_histogram_buckets 0.005 0.01 0.05 0.1 0.5 1 5;`
+    // を ms に換算した値。設定を変えた場合はここも必ず同期させること。
     let expected_msecs: Vec<i64> = vec![5, 10, 50, 100, 500, 1000, 5000];
     let actual_msecs: Vec<i64> = msecs.iter().map(|m| m.as_i64().unwrap()).collect();
     assert_eq!(actual_msecs, expected_msecs);
@@ -97,6 +99,7 @@ fn with_histogram_buckets_are_integer_arrays() {
 #[test]
 fn cache_zones_have_hit_miss_counters() {
     for name in [
+        "initial.json",
         "after_traffic.json",
         "no_histogram.json",
         "with_histogram.json",
