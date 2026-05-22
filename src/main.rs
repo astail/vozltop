@@ -31,7 +31,14 @@ async fn run() -> Result<()> {
         .parse()
         .wrap_err_with(|| format!("invalid URL: {url_arg}"))?;
 
-    let args = Args { url };
+    // --user / --header / --insecure はまだ clap が無いため CLI から読まない。
+    // issue #34 で clap derive を入れたら env::args()/clap::parse() に置換する。
+    let args = Args {
+        url,
+        user: None,
+        headers: Vec::new(),
+        insecure: false,
+    };
     let client = VtsClient::new(&args)?;
     let status = client.fetch().await?;
     println!("{status:#?}");

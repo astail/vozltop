@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::sync::oneshot;
 use url::Url;
 use vozltop::cli::Args;
 use vozltop::client::VtsClient;
@@ -18,20 +19,53 @@ use vozltop::client::VtsClient;
 /// バイト列をそのまま流して `close` する。HTTP/1.1 の最低限の構文 (status
 /// line + `Connection: close` + 空行 + body) だけ満たしている。
 async fn spawn_oneshot_server(response: Vec<u8>) -> Url {
+    let (url, _rx) = spawn_oneshot_capturing(response).await;
+    url
+}
+
+/// ワンショット HTTP サーバを立てて `(URL, 受信したリクエストの byte 列)` を返す。
+///
+/// `rx` を `await` するとサーバが受け取ったリクエスト (request line + headers + 必要なら body)
+/// が 1 回ぶん String で返る。auth ヘッダ等が実際に送られているかを検証する用途。
+async fn spawn_oneshot_capturing(response: Vec<u8>) -> (Url, oneshot::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local_addr");
+    let (tx, rx) = oneshot::channel();
     tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.expect("accept");
-        let mut buf = [0u8; 4096];
-        let _ = socket.read(&mut buf).await;
+        let mut buf = vec![0u8; 8192];
+        let n = socket.read(&mut buf).await.expect("read");
+        let request = String::from_utf8_lossy(&buf[..n]).into_owned();
+        let _ = tx.send(request);
         socket.write_all(&response).await.expect("write");
         socket.shutdown().await.ok();
     });
-    format!("http://{addr}/status/format/json").parse().unwrap()
+    let url = format!("http://{addr}/status/format/json").parse().unwrap();
+    (url, rx)
 }
 
 fn args_for(url: Url) -> Args {
-    Args { url }
+    Args {
+        url,
+        user: None,
+        headers: Vec::new(),
+        insecure: false,
+    }
+}
+
+/// 最小の有効 VtsStatus JSON + 200 OK レスポンスの HTTP/1.1 byte 列。
+fn ok_vts_response() -> Vec<u8> {
+    let body = r#"{
+        "hostName": "h", "nginxVersion": "1", "moduleVersion": "v",
+        "loadMsec": 0, "nowMsec": 1,
+        "connections": {"active":0,"reading":0,"writing":0,"waiting":0,"accepted":0,"handled":0,"requests":0}
+    }"#;
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+    .into_bytes()
 }
 
 #[tokio::test]
@@ -144,4 +178,141 @@ async fn fetch_returns_err_on_connection_refused() {
         res.is_err(),
         "connect to a closed port should return Err, got {res:?}"
     );
+}
+
+// ---- issue #18: authentication / TLS flags --------------------------------
+
+#[tokio::test]
+async fn fetch_sends_basic_auth_when_user_set() {
+    let (url, rx) = spawn_oneshot_capturing(ok_vts_response()).await;
+    let args = Args {
+        url,
+        user: Some("alice:s3cret".into()),
+        headers: Vec::new(),
+        insecure: false,
+    };
+    let client = VtsClient::new(&args).expect("client builds");
+    client.fetch().await.expect("fetch succeeds");
+
+    let request = rx.await.expect("request captured");
+    // "Basic " + base64("alice:s3cret") = "Basic YWxpY2U6czNjcmV0"
+    assert!(
+        request.contains("authorization: Basic YWxpY2U6czNjcmV0")
+            || request.contains("Authorization: Basic YWxpY2U6czNjcmV0"),
+        "expected Authorization header in request:\n{request}"
+    );
+}
+
+#[tokio::test]
+async fn fetch_sends_custom_headers() {
+    let (url, rx) = spawn_oneshot_capturing(ok_vts_response()).await;
+    let args = Args {
+        url,
+        user: None,
+        headers: vec![
+            "Authorization: Bearer xyz".into(),
+            "X-Trace-Id: abc-123".into(),
+        ],
+        insecure: false,
+    };
+    let client = VtsClient::new(&args).expect("client builds");
+    client.fetch().await.expect("fetch succeeds");
+
+    let request = rx.await.expect("request captured");
+    // header 名は HTTP/1.1 では case-insensitive、reqwest は小文字化して送る
+    assert!(
+        request.to_lowercase().contains("authorization: bearer xyz"),
+        "expected Authorization: Bearer xyz in:\n{request}"
+    );
+    assert!(
+        request.to_lowercase().contains("x-trace-id: abc-123"),
+        "expected X-Trace-Id: abc-123 in:\n{request}"
+    );
+}
+
+#[tokio::test]
+async fn fetch_user_takes_precedence_over_authorization_header() {
+    // --user で指定した basic_auth は per-request で適用される。
+    // 一方 --header 'Authorization: Bearer ...' は default_headers として積まれる。
+    // reqwest の挙動として per-request basic_auth は default Authorization を
+    // 上書きするので、最終的に送られるのは Basic ... になる。
+    let (url, rx) = spawn_oneshot_capturing(ok_vts_response()).await;
+    let args = Args {
+        url,
+        user: Some("alice:s3cret".into()),
+        headers: vec!["Authorization: Bearer should-be-overridden".into()],
+        insecure: false,
+    };
+    let client = VtsClient::new(&args).expect("client builds");
+    client.fetch().await.expect("fetch succeeds");
+
+    let request = rx.await.expect("request captured");
+    let lower = request.to_lowercase();
+    assert!(
+        lower.contains("authorization: basic"),
+        "Basic auth should win over default header in:\n{request}"
+    );
+    assert!(
+        !lower.contains("authorization: bearer"),
+        "Bearer header should be overridden by basic_auth in:\n{request}"
+    );
+}
+
+#[tokio::test]
+async fn client_builds_with_insecure_flag() {
+    // --insecure を立てた状態で reqwest::ClientBuilder が成立し、平文 HTTP
+    // (証明書検証関係なし) でも普通に fetch できることを確認。
+    // TLS 自己署名の動作検証はクレートテストでは難しいため、構築 + 通信成立を
+    // 確認するに留める。
+    let (url, _rx) = spawn_oneshot_capturing(ok_vts_response()).await;
+    let args = Args {
+        url,
+        user: None,
+        headers: Vec::new(),
+        insecure: true,
+    };
+    let client = VtsClient::new(&args).expect("insecure client builds");
+    client
+        .fetch()
+        .await
+        .expect("insecure client still fetches plain HTTP");
+}
+
+#[tokio::test]
+async fn invalid_user_format_is_rejected_at_client_new() {
+    let url: Url = "http://127.0.0.1:9/status/format/json".parse().unwrap();
+    let args = Args {
+        url,
+        user: Some("no_colon".into()),
+        headers: Vec::new(),
+        insecure: false,
+    };
+    match VtsClient::new(&args) {
+        Ok(_) => panic!("malformed --user must be rejected"),
+        Err(err) => {
+            let msg = format!("{err:?}");
+            assert!(msg.contains("--user"), "error should mention --user: {msg}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn invalid_header_format_is_rejected_at_client_new() {
+    let url: Url = "http://127.0.0.1:9/status/format/json".parse().unwrap();
+    let args = Args {
+        url,
+        user: None,
+        headers: vec!["no-colon-here".into()],
+        insecure: false,
+    };
+    match VtsClient::new(&args) {
+        Ok(_) => panic!("malformed --header must be rejected"),
+        Err(err) => {
+            let msg = format!("{err:?}");
+            assert!(
+                msg.contains("--header"),
+                "error should mention --header: {msg}"
+            );
+        }
+    }
 }
