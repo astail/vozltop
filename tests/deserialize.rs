@@ -3,7 +3,14 @@
 //! - `no_histogram.json`: `requestBuckets.msecs` / `.counters` が空配列のスキーマ
 //! - `with_histogram.json`: `vhost_traffic_status_histogram_buckets` 設定時のスキーマ
 //!
-//! 値は実フィクスチャから取得した整数で比較する (issue #15 で取得した値)。
+//! 値は issue #15 で取得した実フィクスチャから採取した整数で固定比較する。
+//! これは「現コミットの fixture バイト列」と「現在の `VtsStatus` 型定義」が
+//! 整合している強い保証になる一方、フィクスチャを `tests/fixtures/README.md`
+//! の手順で再取得すると `host_name` (Docker container ID) や `connections.requests`
+//! などが新しい値に変わるため、このファイル中の固定値も同時に更新する必要がある
+//! ことに注意。再取得時の更新漏れを失敗 message で気付けるよう、敢えて exact-value
+//! を残している (shape ベースの assert に倒すと「decode は通っているが値が
+//! 想定外」の検出に弱くなる)。
 
 use std::path::PathBuf;
 
