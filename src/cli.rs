@@ -54,7 +54,7 @@ pub fn parse_user(s: &str) -> Result<(String, String)> {
 ///
 /// - 最初のコロンで 1 回だけ split (value 側のコロンは許容: `Bearer xyz:abc` など)
 /// - name の前後の空白は trim する
-/// - value の先頭の空白 1 文字 (慣例的な `K: V` の空白) は除去する
+/// - value の前後の OWS (= 0 個以上の SP/HTAB) を RFC 9110 §5.5 に従って除去する
 /// - `HeaderName::from_str` / `HeaderValue::from_str` の検証に委譲
 ///   (CR/LF などのヘッダインジェクションは reqwest 側で弾かれる)
 pub fn parse_header(s: &str) -> Result<(HeaderName, HeaderValue)> {
@@ -65,7 +65,8 @@ pub fn parse_header(s: &str) -> Result<(HeaderName, HeaderValue)> {
     if name.is_empty() {
         return Err(eyre!("--header: name must not be empty (got {s:?})"));
     }
-    let value = value.strip_prefix(' ').unwrap_or(value);
+    // RFC 9110 §5.5: OWS = *( SP / HTAB ). value の前後の OWS は意味を持たない。
+    let value = value.trim_matches(|c: char| c == ' ' || c == '\t');
     let name =
         HeaderName::from_str(name).wrap_err_with(|| format!("--header: invalid name {name:?}"))?;
     let value = HeaderValue::from_str(value)
@@ -150,5 +151,14 @@ mod tests {
     fn parse_header_rejects_crlf_injection() {
         // CR/LF を含む値は reqwest::header::HeaderValue 側で弾かれる
         assert!(parse_header("X-Foo: bar\r\nEvil: yes").is_err());
+    }
+
+    #[test]
+    fn parse_header_trims_multiple_leading_and_trailing_ows() {
+        // RFC 9110 OWS 除去: SP/HTAB が複数あっても全て削る
+        let (_, v) = parse_header("X-Foo:   bar  ").unwrap();
+        assert_eq!(v.to_str().unwrap(), "bar");
+        let (_, v) = parse_header("X-Foo:\t\t bar\t").unwrap();
+        assert_eq!(v.to_str().unwrap(), "bar");
     }
 }
