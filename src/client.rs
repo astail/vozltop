@@ -1,15 +1,16 @@
 //! VTS `/status/format/json` を 1 回 fetch する HTTP クライアント。
 //!
-//! issue #17 では認証なしの最小実装。issue #18 で `--user` / `--header` /
-//! `--insecure` を `Args` から拾うように拡張する想定。
+//! issue #17 で認証なし最小実装、issue #18 で `--user` / `--header` /
+//! `--insecure` を `Args` から拾うように拡張。
 
 use std::time::Duration;
 
 use color_eyre::eyre::{eyre, Result, WrapErr};
+use reqwest::header::HeaderMap;
 use reqwest::Client;
 use url::Url;
 
-use crate::cli::Args;
+use crate::cli::{self, Args};
 use crate::model::VtsStatus;
 
 /// `User-Agent` ヘッダの値 (例: `vozltop/0.1.0`)。
@@ -29,6 +30,11 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct VtsClient {
     url: Url,
     http: Client,
+    /// `--user` 指定時のみ `Some((user, pass))`。リクエストごとに `basic_auth`
+    /// を適用する。`default_headers` に Authorization を入れない理由は、
+    /// reqwest が `basic_auth` で `HeaderValue::set_sensitive(true)` を立てて
+    /// くれて、ログ・デバッグ出力で値が伏字になるため。
+    basic_auth: Option<(String, String)>,
 }
 
 impl VtsClient {
@@ -37,16 +43,42 @@ impl VtsClient {
     /// reqwest の `ClientBuilder` 構築は I/O を伴わないが、`build()` は失敗
     /// しうる (システム証明書のロードなど) ため `Result` で返す。
     pub fn new(args: &Args) -> Result<Self> {
-        let http = Client::builder()
+        let mut builder = Client::builder()
             .user_agent(USER_AGENT)
             .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(REQUEST_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT);
+
+        // --header を default_headers に積む。
+        // 同名ヘッダの繰り返しは HeaderMap::append で値を複数持たせる。
+        if !args.headers.is_empty() {
+            let mut headers = HeaderMap::new();
+            for raw in &args.headers {
+                let (name, value) = cli::parse_header(raw)?;
+                headers.append(name, value);
+            }
+            builder = builder.default_headers(headers);
+        }
+
+        // --insecure は TLS 証明書検証を完全に無効化する強い操作なので、
+        // 起動時に必ず stderr へ警告を出す。NO_COLOR でモノクロにフォールバック。
+        if args.insecure {
+            warn_insecure();
+            builder = builder.danger_accept_invalid_certs(true);
+        }
+
+        let http = builder
             .build()
             .wrap_err("failed to build reqwest::Client")?;
+
+        let basic_auth = match &args.user {
+            Some(raw) => Some(cli::parse_user(raw)?),
+            None => None,
+        };
 
         Ok(Self {
             url: args.url.clone(),
             http,
+            basic_auth,
         })
     }
 
@@ -60,9 +92,12 @@ impl VtsClient {
     /// - JSON パース失敗時はデコード対象の先頭 200 バイトを Err メッセージに
     ///   含めて debug を助ける
     pub async fn fetch(&self) -> Result<VtsStatus> {
-        let response = self
-            .http
-            .get(self.url.clone())
+        let mut req = self.http.get(self.url.clone());
+        if let Some((user, pass)) = &self.basic_auth {
+            req = req.basic_auth(user, Some(pass));
+        }
+
+        let response = req
             .send()
             .await
             .wrap_err_with(|| format!("HTTP request to {} failed", self.url))?;
@@ -94,5 +129,19 @@ impl VtsClient {
                 preview
             )
         })
+    }
+}
+
+/// `--insecure` 時の起動時警告。
+///
+/// stderr 出力 + ANSI 黄色 (太字)。`NO_COLOR` 環境変数がセットされている時は
+/// ANSI コードを出さない (<https://no-color.org/> 準拠)。
+fn warn_insecure() {
+    let msg = "WARNING: --insecure disables TLS verification. Use only on trusted networks.";
+    if std::env::var_os("NO_COLOR").is_some() {
+        eprintln!("{msg}");
+    } else {
+        // \x1b[1;33m = bold yellow, \x1b[0m = reset
+        eprintln!("\x1b[1;33m{msg}\x1b[0m");
     }
 }
