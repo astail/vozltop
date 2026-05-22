@@ -73,13 +73,11 @@ pub struct App {
 }
 
 impl App {
+    /// `App::default()` と等価。`#[derive(Default)]` でフィールド追加時に
+    /// 自動で初期値が伝播するため、本メソッドは将来追加されるフィールドに
+    /// ついても自動で正しい初期値を返す (issue #20 の history 等)。
     pub fn new() -> Self {
-        Self {
-            latest: None,
-            consecutive_failures: 0,
-            banner: BannerStatus::Running,
-            restart_detected: false,
-        }
+        Self::default()
     }
 
     /// fetch が成功した場合の状態遷移。

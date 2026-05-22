@@ -131,6 +131,23 @@ impl VtsClient {
 ///
 /// 連続失敗カウンタとバナー表示の切り替え判定に使う。`Display` 実装はバナー用
 /// の **短い** メッセージ (URL や secret を含まない) を返す。
+///
+/// # セキュリティ運用ルール (issue #40 まで)
+///
+/// `FetchError::Connect(reqwest::Error)` の内部 `reqwest::Error` は `Debug`
+/// 実装で URL を含む。ユーザが `vozltop http://admin:secret@host/...` のように
+/// URL に basic auth を埋め込んで起動した場合、`format!("{err:?}")` 経由で
+/// password がログに漏れる経路が成立する。
+///
+/// このため:
+///
+/// - **ユーザ向け表示は必ず `banner_message()` または `Display` (`{err}`) 経由で
+///   行うこと**。`Debug` (`{err:?}`) はトラブルシュート時の手動操作に限定。
+/// - 自動ログ・パニック message・スタックトレースに `FetchError` を `{:?}` で
+///   流さない。
+///
+/// issue #40 (`VOZLTOP_PASSWORD` / argv 経由の平文露出問題) で URL credential
+/// を sanitize する `Debug` 手書き実装に置き換えるまで、この約束は厳守。
 #[derive(Debug)]
 pub enum FetchError {
     /// 名前解決、TCP 接続、TLS ハンドシェイク等の接続フェーズの失敗。transient。
