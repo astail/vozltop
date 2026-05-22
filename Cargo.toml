@@ -10,6 +10,10 @@ readme = "README.md"
 keywords = ["nginx", "vts", "tui", "monitoring"]
 categories = ["command-line-utilities"]
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [dependencies]
 
 [profile.release]
