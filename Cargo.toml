@@ -14,8 +14,10 @@ categories = ["command-line-utilities"]
 all-features = true
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
+pretty_assertions = "1"
 serde_json = "1"
 
 [profile.release]
