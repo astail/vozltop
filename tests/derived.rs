@@ -305,3 +305,95 @@ fn percentile_with_synthetic_cross_bucket_distribution_matches_python() {
     assert_pct_close(percentile(&prev, &now, 0.95), 420.0, "synthetic p95");
     assert_pct_close(percentile(&prev, &now, 0.99), 484.0, "synthetic p99");
 }
+
+// ---------------------------------------------------------------------------
+// issue #23: 受け入れ条件のうち未網羅だった last-bucket overflow / delta=0 補間
+// スキップを明示的にテストする (網羅性担保)。
+// ---------------------------------------------------------------------------
+
+/// p > 1.0 で `target > total` となり `Overflow(last_msec)` を返すケース。
+/// UI 側は `>Nms` 表示にフォールバックするための情報源として `last_msec` を使う。
+#[test]
+fn percentile_returns_overflow_when_target_exceeds_total() {
+    // 独立計算:
+    //   msecs = [5, 10, 50, 100, 500, 1000, 5000]
+    //   D     = [5, 8, 10, 10, 10, 10, 10]   (累積)
+    //   total = 10
+    //   p=1.5 → target = 15 > total → ループ内で命中せず Overflow(5000)
+    let prev = Buckets {
+        msecs: vec![5, 10, 50, 100, 500, 1000, 5000],
+        counters: vec![0; 7],
+    };
+    let now = Buckets {
+        msecs: vec![5, 10, 50, 100, 500, 1000, 5000],
+        counters: vec![5, 8, 10, 10, 10, 10, 10],
+    };
+    assert_eq!(percentile(&prev, &now, 1.5), PercentileResult::Overflow(5000));
+}
+
+/// `Overflow` のソート用 sort_value は最終 bucket の msec を `f64` で返す。
+/// UI で `>Nms` 文字列を描画する際の上限値の供給源として固定された契約。
+#[test]
+fn percentile_overflow_sort_value_uses_last_bucket_msec() {
+    let prev = Buckets {
+        msecs: vec![5, 10, 5000],
+        counters: vec![0, 0, 0],
+    };
+    let now = Buckets {
+        msecs: vec![5, 10, 5000],
+        counters: vec![1, 1, 1],
+    };
+    let res = percentile(&prev, &now, 2.0); // p > 1.0 で Overflow を狙う
+    match res {
+        PercentileResult::Overflow(max_ms) => {
+            assert_eq!(max_ms, 5000, "Overflow holds last bucket msec");
+            assert_eq!(res.sort_value(), Some(5000.0));
+        }
+        other => panic!("expected Overflow, got {other:?}"),
+    }
+}
+
+/// delta=0 となる bucket を補間時にスキップして、次の正の delta を持つ bucket で
+/// 命中することを検証する (バケツ列の前段が `0` でも補間ロジックは正しく進む)。
+///
+/// 独立計算:
+///   msecs   = [5, 10, 50, 100]
+///   prev    = [0, 5, 5, 5]
+///   now     = [0, 5, 5, 15]
+///   D       = [0, 0, 0, 10]  (前 3 bucket は delta=0 → 補間スキップ)
+///   total   = 10
+///   p50: target = 5. i=0..2 (D=0) スキップ, i=3 (D[3]=10 >= 5).
+///        cum_prev = D[2] = 0. bucket_count = 10. lower = msecs[2] = 50,
+///        upper = msecs[3] = 100. interp = 5/10 = 0.5.
+///        value = 50 + 50*0.5 = 75.0 ms
+#[test]
+fn percentile_skips_zero_delta_buckets_during_interpolation() {
+    let prev = Buckets {
+        msecs: vec![5, 10, 50, 100],
+        counters: vec![0, 5, 5, 5],
+    };
+    let now = Buckets {
+        msecs: vec![5, 10, 50, 100],
+        counters: vec![0, 5, 5, 15],
+    };
+    assert_pct_close(
+        percentile(&prev, &now, 0.50),
+        75.0,
+        "zero-delta buckets skipped, lands in trailing bucket",
+    );
+}
+
+/// 全 bucket の delta が 0 のときは `total == 0` となり `NoData` を返す
+/// (= 「補間自体をスキップ」する受け入れ条件)。
+#[test]
+fn percentile_all_zero_delta_returns_nodata() {
+    let prev = Buckets {
+        msecs: vec![5, 10, 50],
+        counters: vec![3, 3, 3],
+    };
+    let now = Buckets {
+        msecs: vec![5, 10, 50],
+        counters: vec![3, 3, 3], // 全 bucket で delta=0
+    };
+    assert_eq!(percentile(&prev, &now, 0.95), PercentileResult::NoData);
+}
