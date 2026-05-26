@@ -142,6 +142,10 @@ cargo run -- http://localhost:8080/status/format/json --interval 0.5
 
 `docs/ROADMAP.md` 参照。マルチホスト監視、`/status/control` 経由のリセット、TOML 設定ファイル等を Phase 2 で予定。
 
+## セキュリティ
+
+脆弱性を発見した場合は public な issue ではなく、[GitHub Private Vulnerability Reporting](https://github.com/astail/vozltop/security/advisories/new) または `kiyomillefeuille@gmail.com` 宛にご連絡ください。詳細は [SECURITY.md](SECURITY.md) を参照してください。
+
 ## ライセンス
 
 [MIT License](LICENSE) © 2026 astail
