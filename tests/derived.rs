@@ -7,8 +7,8 @@
 
 use std::path::PathBuf;
 
-use vozltop::model::VtsStatus;
-use vozltop::state::{compute, DerivedSnapshot};
+use vozltop::model::{Buckets, VtsStatus};
+use vozltop::state::{average_fallback, compute, percentile, DerivedSnapshot, PercentileResult};
 
 const EPSILON: f64 = 1e-6;
 
@@ -181,4 +181,127 @@ fn identical_snapshot_returns_none() {
     // 同一 tick (dt = 0) は派生計算スキップ
     let s = load("initial.json");
     assert!(compute(&s, &s).is_none());
+}
+
+// ---------------------------------------------------------------------------
+// issue #22: histogram p50/p95/p99 (with_histogram.json + 独立計算との一致)
+// ---------------------------------------------------------------------------
+
+/// 1 ms 以内の一致を保証するアサーション (受け入れ条件)。
+fn assert_pct_close(actual: PercentileResult, expected_ms: f64, ctx: &str) {
+    match actual {
+        PercentileResult::Value(v) => assert!(
+            (v - expected_ms).abs() < 1.0,
+            "{ctx}: expected {expected_ms} ms (±1), got Value({v})"
+        ),
+        other => panic!("{ctx}: expected Value, got {other:?}"),
+    }
+}
+
+fn zeroed_like(now: &Buckets) -> Buckets {
+    Buckets {
+        msecs: now.msecs.clone(),
+        counters: vec![0; now.counters.len()],
+    }
+}
+
+#[test]
+fn percentile_against_with_histogram_fixture_matches_independent_calc() {
+    // with_histogram.json は単一 snapshot で counters_prev が無いので、
+    // "nginx 起動直後 → with_histogram.json" の時点を模擬して prev は全 0 で作る。
+    // すべての request が bucket 0 (≤ 5ms) に落ちている fixture なので、
+    // 線形補間は bucket 0 区間 [0, 5] ms 内の単純比例になる。
+    //
+    // 独立計算 (Python 等):
+    //   msecs   = [5, 10, 50, 100, 500, 1000, 5000]
+    //   D       = [5002, 5002, 5002, 5002, 5002, 5002, 5002]  (prev = 0)
+    //   total   = 5002
+    //   p50: target = 2501, i=0, lower=0, upper=5, interp = 2501/5002 = 0.5
+    //         value = 5 * 0.5 = 2.5 ms
+    //   p95: target = 4751.9, interp = 4751.9/5002 = 0.95, value = 4.75 ms
+    //   p99: target = 4951.98, interp = 0.99, value = 4.95 ms
+    let status = load("with_histogram.json");
+    let api = status
+        .server_zones
+        .get("api.example.test")
+        .expect("api.example.test in with_histogram fixture");
+    let now = api
+        .request_buckets
+        .as_ref()
+        .expect("api should have requestBuckets in with_histogram fixture")
+        .clone();
+    let prev = zeroed_like(&now);
+
+    assert_pct_close(percentile(&prev, &now, 0.50), 2.50, "api p50");
+    assert_pct_close(percentile(&prev, &now, 0.95), 4.75, "api p95");
+    assert_pct_close(percentile(&prev, &now, 0.99), 4.95, "api p99");
+}
+
+#[test]
+fn percentile_upstream_buckets_in_with_histogram_fixture() {
+    // upstream backend_api[0] も同じ bucket 設計で counters = [2501;7] になっている。
+    // total = 2501, p95: interp = 0.95, value = 4.75 ms
+    let status = load("with_histogram.json");
+    let server = &status
+        .upstream_zones
+        .get("backend_api")
+        .expect("backend_api in fixture")[0];
+    let now = server
+        .request_buckets
+        .as_ref()
+        .expect("backend_api[0] requestBuckets in fixture")
+        .clone();
+    let prev = zeroed_like(&now);
+    assert_pct_close(percentile(&prev, &now, 0.95), 4.75, "upstream p95");
+}
+
+#[test]
+fn percentile_no_histogram_zone_returns_nodata_and_avg_fallback_kicks_in() {
+    // no_histogram.json は msecs/counters が空配列の zone を含む。
+    // percentile() は NoData を返し、呼び出し側で average_fallback を選ぶ流れ。
+    let status = load("no_histogram.json");
+    let api = status
+        .server_zones
+        .get("api.example.test")
+        .expect("api in no_histogram fixture");
+    let now = api
+        .request_buckets
+        .as_ref()
+        .expect("requestBuckets field present even if empty")
+        .clone();
+    let prev = now.clone();
+    assert_eq!(percentile(&prev, &now, 0.95), PercentileResult::NoData);
+
+    // 呼び出し側が average_fallback に切り替えると Average(request_msec) を得る
+    let fallback = average_fallback(api.request_msec);
+    assert_eq!(fallback, PercentileResult::Average(api.request_msec as f64));
+}
+
+#[test]
+fn percentile_with_synthetic_cross_bucket_distribution_matches_python() {
+    // 独立計算 (Python 相当):
+    //   msecs = [5, 10, 50, 100, 500]
+    //   prev  = [0,  0,  0,   0,   0]
+    //   now   = [10, 50, 100, 150, 200]
+    //   D     = [10, 50, 100, 150, 200]   (累積)
+    //   total = 200
+    //
+    //   p50: target = 100. i=2 (D[2]=100 >= 100), cum_prev = D[1] = 50.
+    //        bucket_count = 50, lower=10, upper=50, interp = (100-50)/50 = 1.0
+    //        value = 10 + 40*1.0 = 50.0 ms
+    //   p95: target = 190. i=4 (D[4]=200 >= 190), cum_prev = D[3] = 150.
+    //        bucket_count = 50, lower=100, upper=500, interp = 0.8
+    //        value = 100 + 400*0.8 = 420.0 ms
+    //   p99: target = 198. interp = 0.96, value = 100 + 400*0.96 = 484.0 ms
+    let prev = Buckets {
+        msecs: vec![5, 10, 50, 100, 500],
+        counters: vec![0, 0, 0, 0, 0],
+    };
+    let now = Buckets {
+        msecs: vec![5, 10, 50, 100, 500],
+        counters: vec![10, 50, 100, 150, 200],
+    };
+    assert_pct_close(percentile(&prev, &now, 0.50), 50.0, "synthetic p50");
+    assert_pct_close(percentile(&prev, &now, 0.95), 420.0, "synthetic p95");
+    assert_pct_close(percentile(&prev, &now, 0.99), 484.0, "synthetic p99");
 }
