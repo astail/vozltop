@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+use reqwest::header::{HeaderName, HeaderValue};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -47,10 +48,21 @@ async fn spawn_oneshot_capturing(response: Vec<u8>) -> (Url, oneshot::Receiver<S
 fn args_for(url: Url) -> Args {
     Args {
         url,
+        interval: 1.0,
         user: None,
         headers: Vec::new(),
         insecure: false,
+        no_color: false,
     }
+}
+
+/// テスト用の `--header` 値 (raw 文字列) をパース済みタプルに変換する。
+/// `cli::parse_header` と等価な処理を最小限で再現するヘルパ。
+fn header(name: &'static str, value: &'static str) -> (HeaderName, HeaderValue) {
+    (
+        HeaderName::from_static(name),
+        HeaderValue::from_static(value),
+    )
 }
 
 /// 最小の有効 VtsStatus JSON + 200 OK レスポンスの HTTP/1.1 byte 列。
@@ -196,9 +208,11 @@ async fn fetch_sends_basic_auth_when_user_set() {
     let (url, rx) = spawn_oneshot_capturing(ok_vts_response()).await;
     let args = Args {
         url,
-        user: Some("alice:s3cret".into()),
+        interval: 1.0,
+        user: Some(("alice".into(), "s3cret".into())),
         headers: Vec::new(),
         insecure: false,
+        no_color: false,
     };
     let client = VtsClient::new(&args).expect("client builds");
     client.fetch().await.expect("fetch succeeds");
@@ -217,12 +231,14 @@ async fn fetch_sends_custom_headers() {
     let (url, rx) = spawn_oneshot_capturing(ok_vts_response()).await;
     let args = Args {
         url,
+        interval: 1.0,
         user: None,
         headers: vec![
-            "Authorization: Bearer xyz".into(),
-            "X-Trace-Id: abc-123".into(),
+            header("authorization", "Bearer xyz"),
+            header("x-trace-id", "abc-123"),
         ],
         insecure: false,
+        no_color: false,
     };
     let client = VtsClient::new(&args).expect("client builds");
     client.fetch().await.expect("fetch succeeds");
@@ -248,9 +264,11 @@ async fn fetch_user_takes_precedence_over_authorization_header() {
     let (url, rx) = spawn_oneshot_capturing(ok_vts_response()).await;
     let args = Args {
         url,
-        user: Some("alice:s3cret".into()),
-        headers: vec!["Authorization: Bearer should-be-overridden".into()],
+        interval: 1.0,
+        user: Some(("alice".into(), "s3cret".into())),
+        headers: vec![header("authorization", "Bearer should-be-overridden")],
         insecure: false,
+        no_color: false,
     };
     let client = VtsClient::new(&args).expect("client builds");
     client.fetch().await.expect("fetch succeeds");
@@ -276,9 +294,11 @@ async fn client_builds_with_insecure_flag() {
     let (url, _rx) = spawn_oneshot_capturing(ok_vts_response()).await;
     let args = Args {
         url,
+        interval: 1.0,
         user: None,
         headers: Vec::new(),
         insecure: true,
+        no_color: true, // 警告のカラーコードを抑制 (テスト出力を汚さない)
     };
     let client = VtsClient::new(&args).expect("insecure client builds");
     client
@@ -287,41 +307,7 @@ async fn client_builds_with_insecure_flag() {
         .expect("insecure client still fetches plain HTTP");
 }
 
-#[tokio::test]
-async fn invalid_user_format_is_rejected_at_client_new() {
-    let url: Url = "http://127.0.0.1:9/status/format/json".parse().unwrap();
-    let args = Args {
-        url,
-        user: Some("no_colon".into()),
-        headers: Vec::new(),
-        insecure: false,
-    };
-    match VtsClient::new(&args) {
-        Ok(_) => panic!("malformed --user must be rejected"),
-        Err(err) => {
-            let msg = format!("{err:?}");
-            assert!(msg.contains("--user"), "error should mention --user: {msg}");
-        }
-    }
-}
-
-#[tokio::test]
-async fn invalid_header_format_is_rejected_at_client_new() {
-    let url: Url = "http://127.0.0.1:9/status/format/json".parse().unwrap();
-    let args = Args {
-        url,
-        user: None,
-        headers: vec!["no-colon-here".into()],
-        insecure: false,
-    };
-    match VtsClient::new(&args) {
-        Ok(_) => panic!("malformed --header must be rejected"),
-        Err(err) => {
-            let msg = format!("{err:?}");
-            assert!(
-                msg.contains("--header"),
-                "error should mention --header: {msg}"
-            );
-        }
-    }
-}
+// 旧版の `invalid_user_format_is_rejected_at_client_new` / `invalid_header_format_is_rejected_at_client_new`
+// は issue #34 で clap の `value_parser` 側に検証を移したため削除した。
+// 同等のケースは `src/cli.rs` の `args_rejects_invalid_user_at_clap_layer` /
+// `args_rejects_invalid_header_at_clap_layer` で確認している。
