@@ -1,14 +1,16 @@
 //! 直近 120 件の `VtsStatus` snapshot を rolling buffer で保持する `History`、
 //! および sparkline / Gauge auto-scale 用の集計値。
 //!
-//! issue #20 では型と push の口だけ作る。`DerivedSnapshot` の実体は issue
-//! #21〜#23 で `state::derived` モジュールに分離される予定で、本 PR では
-//! 空 struct の placeholder。
+//! issue #20 で型と push の口を整備し、issue #21 で `DerivedSnapshot` の実体を
+//! `state::derived` に切り出した。本ファイルでは派生メトリクスの計算は持たず、
+//! per-tick の `DerivedSnapshot` を `Snapshot.derived` として受け取り、zone
+//! 横断値の sparkline (`rps_history` / `bw_*_history`) のみを更新する。
 
 use std::collections::VecDeque;
 use std::time::Instant;
 
 use crate::model::VtsStatus;
+use crate::state::derived::DerivedSnapshot;
 
 /// rolling buffer の最大長。1 秒間隔で 120 サンプル ≒ 2 分の履歴。
 pub const HISTORY_CAPACITY: usize = 120;
@@ -23,22 +25,6 @@ pub struct Snapshot {
     /// 派生メトリクス (RPS / BW/s / percentile)。
     /// issue #21〜#23 で実装、本 PR では空 placeholder。
     pub derived: DerivedSnapshot,
-}
-
-/// 派生メトリクス placeholder。
-///
-/// issue #21〜#23 で以下を埋める想定:
-/// - `rps: u64` / `bw_in_per_sec: u64` / `bw_out_per_sec: u64` (zone 横断集計)
-/// - `server_p95: HashMap<String, Option<u64>>` 等の per-zone percentile
-///
-/// 本 PR では空にすることで「型は存在するが値は無い」状態にし、derive(Default)
-/// で App / History が初期化できることを担保する。
-#[derive(Debug, Clone, Default)]
-pub struct DerivedSnapshot {
-    /// TODO(issue #21): RPS / BW/s
-    /// TODO(issue #22): p50/p95/p99 per zone
-    #[allow(dead_code)]
-    _placeholder: (),
 }
 
 /// `Snapshot` の rolling buffer + sparkline 用集計 + Gauge auto-scale 用 rolling
