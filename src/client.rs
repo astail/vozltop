@@ -2,7 +2,10 @@
 //!
 //! issue #17 で認証なし最小実装、issue #18 で `--user` / `--header` /
 //! `--insecure` を `Args` から拾うように拡張、issue #19 で `fetch` の戻り値
-//! 型を `Result<VtsStatus, FetchError>` に分類した。
+//! 型を `Result<VtsStatus, FetchError>` に分類した。issue #34 で
+//! `Args` 側を clap derive に置き換えた結果、ヘッダと user:pass は
+//! **既に正規化済みの型** (`HeaderName` / `HeaderValue` / `(String, String)`)
+//! として渡ってくる。本ファイルでは検証を再実行しない。
 
 use std::fmt;
 use std::time::Duration;
@@ -12,7 +15,7 @@ use reqwest::header::HeaderMap;
 use reqwest::{Client, StatusCode};
 use url::Url;
 
-use crate::cli::{self, Args};
+use crate::cli::Args;
 use crate::model::VtsStatus;
 
 /// `User-Agent` ヘッダの値 (例: `vozltop/0.1.0`)。
@@ -60,9 +63,8 @@ impl VtsClient {
         // 同名ヘッダの繰り返しは HeaderMap::append で値を複数持たせる。
         if !args.headers.is_empty() {
             let mut headers = HeaderMap::new();
-            for raw in &args.headers {
-                let (name, value) = cli::parse_header(raw)?;
-                headers.append(name, value);
+            for (name, value) in &args.headers {
+                headers.append(name.clone(), value.clone());
             }
             builder = builder.default_headers(headers);
         }
@@ -75,15 +77,12 @@ impl VtsClient {
             .build()
             .wrap_err("failed to build reqwest::Client")?;
 
-        let basic_auth = match &args.user {
-            Some(raw) => Some(cli::parse_user(raw)?),
-            None => None,
-        };
+        let basic_auth = args.user.clone();
 
-        // build() が成功し、認証情報の検証も通った後で初めて警告する。
+        // build() が成功した後で初めて警告する。
         // build() 失敗時に「警告だけ見せて死ぬ」混乱を避けるため。
         if args.insecure {
-            warn_insecure();
+            warn_insecure(args.no_color_effective());
         }
 
         Ok(Self {
@@ -218,16 +217,17 @@ impl From<reqwest::Error> for FetchError {
 
 /// `--insecure` 時の起動時警告。
 ///
-/// stderr 出力 + ANSI 黄色 (太字)。`NO_COLOR` 環境変数がセットされている時は
-/// ANSI コードを出さない (<https://no-color.org/> 準拠)。
+/// stderr 出力 + ANSI 黄色 (太字)。`no_color` が真の時は ANSI コードを
+/// 出さない (`--no-color` または `NO_COLOR` 環境変数のいずれか;
+/// 評価は `Args::no_color_effective` に集約)。
 ///
 /// プロセス起動中に複数回 `VtsClient::new()` が呼ばれても (将来の reconnect
 /// ロジック等)、警告が運用ログを汚さないよう `OnceLock` で 1 度きりに絞る。
-fn warn_insecure() {
+fn warn_insecure(no_color: bool) {
     static WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     WARNED.get_or_init(|| {
         let msg = "WARNING: --insecure disables TLS verification. Use only on trusted networks.";
-        if std::env::var_os("NO_COLOR").is_some() {
+        if no_color {
             eprintln!("{msg}");
         } else {
             // \x1b[1;33m = bold yellow, \x1b[0m = reset
