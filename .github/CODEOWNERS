@@ -1,0 +1,20 @@
+# CODEOWNERS for vozltop
+#
+# Reference: https://docs.github.com/en/repositories/managing-your-repositories-settings-and-customizations/customizing-your-repository/about-code-owners
+#
+# Last matching pattern wins. Order specific rules AFTER the catch-all.
+# 将来コラボレーターが増えたら area 単位で分割する。
+
+# ---- Catch-all ----
+*                  @astail
+
+# ---- CI / build infrastructure ----
+/.github/          @astail
+
+# ---- Dependencies (Cargo) ----
+/Cargo.toml        @astail
+/Cargo.lock        @astail
+/rust-toolchain.toml  @astail
+
+# ---- Security ----
+/SECURITY.md       @astail
