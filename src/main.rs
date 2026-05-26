@@ -49,12 +49,15 @@ async fn run() -> Result<()> {
         Err(err) => app.on_fetch_err(&err),
     }
 
-    println!("[banner] {}", app.banner.label());
-    if app.restart_detected {
+    println!("[status] {:?}", app.status);
+    if let Some(banner) = &app.error_banner {
+        println!("[banner] {banner}");
+    }
+    if app.history.nginx_restart_detected() {
         println!("[banner] nginx restart detected (nowMsec went backwards)");
     }
-    if let Some(latest) = &app.latest {
-        println!("{latest:#?}");
+    if let Some(snapshot) = app.history.latest() {
+        println!("{:#?}", snapshot.status);
     }
     Ok(())
 }
