@@ -328,7 +328,10 @@ fn percentile_returns_overflow_when_target_exceeds_total() {
         msecs: vec![5, 10, 50, 100, 500, 1000, 5000],
         counters: vec![5, 8, 10, 10, 10, 10, 10],
     };
-    assert_eq!(percentile(&prev, &now, 1.5), PercentileResult::Overflow(5000));
+    assert_eq!(
+        percentile(&prev, &now, 1.5),
+        PercentileResult::Overflow(5000)
+    );
 }
 
 /// `Overflow` のソート用 sort_value は最終 bucket の msec を `f64` で返す。
