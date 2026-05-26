@@ -21,11 +21,13 @@ use crate::model::VtsStatus;
 
 pub mod derived;
 pub mod history;
+pub mod percentile;
 
 pub use derived::{
     compute, CacheDerived, DerivedSnapshot, ServerDerived, StatusRatios, UpstreamDerived, ZoneRates,
 };
 pub use history::{History, Snapshot, HISTORY_CAPACITY};
+pub use percentile::{average_fallback, compare_for_sort, percentile, PercentileResult};
 
 /// `Stale` → `Disconnected` に escalate する連続失敗回数の閾値。
 ///
