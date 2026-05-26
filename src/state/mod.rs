@@ -19,9 +19,13 @@ use std::time::Instant;
 use crate::client::FetchError;
 use crate::model::VtsStatus;
 
+pub mod derived;
 pub mod history;
 
-pub use history::{DerivedSnapshot, History, Snapshot, HISTORY_CAPACITY};
+pub use derived::{
+    compute, CacheDerived, DerivedSnapshot, ServerDerived, StatusRatios, UpstreamDerived, ZoneRates,
+};
+pub use history::{History, Snapshot, HISTORY_CAPACITY};
 
 /// `Stale` → `Disconnected` に escalate する連続失敗回数の閾値。
 ///
