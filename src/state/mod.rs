@@ -18,6 +18,7 @@ use std::time::Instant;
 
 use crate::client::FetchError;
 use crate::model::VtsStatus;
+use crate::theme::Theme;
 
 pub mod derived;
 pub mod history;
@@ -110,6 +111,7 @@ impl AppStatus {
 /// フィールドは UI からも書き換える (cursor, filter, sort, active_tab) 都合上、
 /// 全部 `pub` で公開している。値の埋まり方は段階的:
 /// - 本 PR (#20) では `history` と `status` を fetch ループから書く。
+/// - issue #26 で `theme` を追加 (NO_COLOR / --no-color 連動)。
 /// - issue #28 で UI 側が `sort` / `filter` / `cursor` / `detail_zone` を書く。
 #[derive(Debug)]
 pub struct App {
@@ -131,6 +133,11 @@ pub struct App {
     /// セキュリティ上、URL や認証情報を含まないように
     /// `FetchError::banner_message()` 経由で生成する。
     pub error_banner: Option<String>,
+    /// UI 配色 (`Theme::color()` / `Theme::mono()`)。
+    ///
+    /// `main.rs` 起動時に `Theme::from_args(&args)` で確定する。テストや
+    /// `App::new()` 経由では `Theme::default()` (= color) が入る。
+    pub theme: Theme,
 }
 
 impl Default for App {
@@ -140,8 +147,14 @@ impl Default for App {
 }
 
 impl App {
-    /// 初期状態を返す。
+    /// 初期状態を返す (テーマは `Theme::default()` = color)。
     pub fn new() -> Self {
+        Self::with_theme(Theme::default())
+    }
+
+    /// 任意のテーマで初期化する。`main.rs` から `Theme::from_args(&args)` を
+    /// 渡して呼ぶことを想定。
+    pub fn with_theme(theme: Theme) -> Self {
         Self {
             status: AppStatus::default(),
             history: History::new(),
@@ -151,7 +164,19 @@ impl App {
             cursor: 0,
             detail_zone: None,
             error_banner: None,
+            theme,
         }
+    }
+
+    /// バナー描画用の文字列を返す。mono 時のみ `[!] ` プレフィックスを付与する
+    /// (issue #26 受け入れ条件)。
+    ///
+    /// UI レイヤ (issue #27 以降) はこの戻り値を `Paragraph` 等に流すだけで、
+    /// プレフィックス分岐を自前で持たなくてよい。
+    pub fn error_banner_display(&self) -> Option<String> {
+        self.error_banner
+            .as_deref()
+            .map(|msg| format!("{}{msg}", self.theme.error_banner_prefix()))
     }
 
     /// fetch 成功時のハンドラ。
@@ -243,6 +268,43 @@ mod tests {
         assert_eq!(app.cursor, 0);
         assert!(app.detail_zone.is_none());
         assert!(app.error_banner.is_none());
+        // 既定テーマは color。
+        assert!(!app.theme.mono);
+    }
+
+    #[test]
+    fn with_theme_stores_theme() {
+        let app = App::with_theme(Theme::mono());
+        assert!(app.theme.mono);
+        // 他フィールドは new() と同じ初期値
+        assert!(matches!(app.status, AppStatus::Connecting));
+        assert!(app.history.is_empty());
+    }
+
+    #[test]
+    fn error_banner_display_returns_none_when_no_banner() {
+        let app = App::new();
+        assert!(app.error_banner_display().is_none());
+    }
+
+    #[test]
+    fn error_banner_display_has_no_prefix_in_color_mode() {
+        let mut app = App::with_theme(Theme::color());
+        app.error_banner = Some("HTTP 500 Internal Server Error".to_string());
+        assert_eq!(
+            app.error_banner_display().as_deref(),
+            Some("HTTP 500 Internal Server Error")
+        );
+    }
+
+    #[test]
+    fn error_banner_display_has_bang_prefix_in_mono_mode() {
+        let mut app = App::with_theme(Theme::mono());
+        app.error_banner = Some("HTTP 500 Internal Server Error".to_string());
+        assert_eq!(
+            app.error_banner_display().as_deref(),
+            Some("[!] HTTP 500 Internal Server Error")
+        );
     }
 
     #[test]
