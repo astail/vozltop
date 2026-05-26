@@ -418,6 +418,7 @@ mod tests {
 
     #[test]
     fn no_color_effective_true_when_flag_set() {
+        let _env = crate::test_util::ENV_LOCK.lock().unwrap();
         let a = args_with_no_color(true);
         // env が空のテスト隔離のため一時的に unset
         let _guard = ScopedEnv::remove("NO_COLOR");
@@ -426,6 +427,7 @@ mod tests {
 
     #[test]
     fn no_color_effective_false_when_flag_and_env_both_unset() {
+        let _env = crate::test_util::ENV_LOCK.lock().unwrap();
         let a = args_with_no_color(false);
         let _guard = ScopedEnv::remove("NO_COLOR");
         assert!(!a.no_color_effective());
@@ -433,6 +435,7 @@ mod tests {
 
     #[test]
     fn no_color_effective_true_when_env_set_non_empty() {
+        let _env = crate::test_util::ENV_LOCK.lock().unwrap();
         let a = args_with_no_color(false);
         let _guard = ScopedEnv::set("NO_COLOR", "1");
         assert!(a.no_color_effective());
@@ -441,6 +444,7 @@ mod tests {
     #[test]
     fn no_color_effective_false_when_env_empty() {
         // https://no-color.org: "present and not an empty string"
+        let _env = crate::test_util::ENV_LOCK.lock().unwrap();
         let a = args_with_no_color(false);
         let _guard = ScopedEnv::set("NO_COLOR", "");
         assert!(!a.no_color_effective());
