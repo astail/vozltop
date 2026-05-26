@@ -1,6 +1,7 @@
 # vozltop
 
 [![CI](https://github.com/astail/vozltop/actions/workflows/ci.yml/badge.svg)](https://github.com/astail/vozltop/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 `htop`-like real-time TUI for [vozlt/nginx-module-vts](https://github.com/vozlt/nginx-module-vts).
 
@@ -143,4 +144,4 @@ cargo run -- http://localhost:8080/status/format/json --interval 0.5
 
 ## ライセンス
 
-MIT（v1 リリース時に確定）。
+[MIT License](LICENSE) © 2026 astail
