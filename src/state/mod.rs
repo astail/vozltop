@@ -68,6 +68,13 @@ impl Default for SortState {
 ///   `DISCONNECTED_THRESHOLD` 到達で `Disconnected { failures }` に escalate
 /// - Disconnected + fetch 失敗 → `Disconnected { failures+=1 }`
 /// - 任意 + fetch 成功 → `Running` (failures リセット、error_banner クリア)
+///
+/// UI 設計上の注意:
+/// 起動直後 (`Connecting`) の初回失敗は `Disconnected { failures: 1 }` に直接
+/// 遷移するが、これは `failures < DISCONNECTED_THRESHOLD` の段階で UI 側が
+/// "Connection failed" 等の柔らかい表現に切り替える前提 (issue #25 / #29 で
+/// 描画レイヤが実装するときに吸収)。`Disconnected` という名前は内部状態のみで
+/// あり、即「切断バナー赤色」を意味しない。
 #[derive(Debug, Clone, Default)]
 pub enum AppStatus {
     #[default]
@@ -161,8 +168,11 @@ impl App {
     ///
     /// 状態遷移は `AppStatus` の docstring に従う。バナー文字列は
     /// `FetchError::banner_message()` から生成し、URL / 認証情報を含まない。
+    /// 連続失敗中は新規 push が発生しないため、`history.nginx_restart_detected`
+    /// が前回 true のまま張り付くのを防ぐべくここでクリアする。
     pub fn on_fetch_err(&mut self, err: &FetchError) {
         self.error_banner = Some(err.banner_message());
+        self.history.clear_nginx_restart_flag();
         self.status = match &self.status {
             AppStatus::Connecting => AppStatus::Disconnected { failures: 1 },
             AppStatus::Running => match self.history.last_at() {
@@ -346,5 +356,20 @@ mod tests {
         assert!(!app.history.nginx_restart_detected());
         app.on_fetch_ok(ok_status(500));
         assert!(app.history.nginx_restart_detected());
+    }
+
+    #[test]
+    fn on_fetch_err_clears_nginx_restart_flag() {
+        // PR #61 レビュー指摘: fetch 連続失敗中に restart flag が張り付くのを防ぐ。
+        let mut app = App::new();
+        app.on_fetch_ok(ok_status(1_000_000));
+        app.on_fetch_ok(ok_status(500)); // restart 検知
+        assert!(app.history.nginx_restart_detected());
+
+        app.on_fetch_err(&http_err());
+        assert!(
+            !app.history.nginx_restart_detected(),
+            "fetch 失敗時に restart flag をクリアすること"
+        );
     }
 }

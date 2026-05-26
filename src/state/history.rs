@@ -142,6 +142,14 @@ impl History {
         self.nginx_restart_detected
     }
 
+    /// `nginx_restart_detected` を強制的に false に戻す。
+    ///
+    /// fetch 失敗中は push されないので、flag を立てたまま「再起動バナー」が
+    /// 長時間張り付くのを防ぐため、`App::on_fetch_err` が呼ぶ想定。
+    pub fn clear_nginx_restart_flag(&mut self) {
+        self.nginx_restart_detected = false;
+    }
+
     /// 集計値 sparkline 履歴 (RPS) への借用。
     pub fn rps_history(&self) -> &VecDeque<u64> {
         &self.rps_history
@@ -249,6 +257,31 @@ mod tests {
         assert!(h.nginx_restart_detected());
 
         h.push(snapshot(1500, 0)); // 通常進行
+        assert!(!h.nginx_restart_detected());
+    }
+
+    #[test]
+    fn equal_nowmsec_is_not_treated_as_restart() {
+        // 受信間隔が短くて時計分解能が足りない場合、同じ nowMsec が連続することは
+        // ありうる。strict less ではなく `<=` で判定していると false positive で
+        // 「再起動」と表示してしまうため、回帰防止に固定する。
+        let mut h = History::new();
+        h.push(snapshot(1_000_000, 5));
+        h.push(snapshot(1_000_000, 7));
+        assert!(
+            !h.nginx_restart_detected(),
+            "同値 nowMsec は restart と見做さない"
+        );
+        assert_eq!(h.rolling_max_active_conns(), 7);
+    }
+
+    #[test]
+    fn clear_nginx_restart_flag_resets_to_false() {
+        let mut h = History::new();
+        h.push(snapshot(1_000_000, 0));
+        h.push(snapshot(500, 0));
+        assert!(h.nginx_restart_detected());
+        h.clear_nginx_restart_flag();
         assert!(!h.nginx_restart_detected());
     }
 
