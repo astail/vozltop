@@ -37,6 +37,9 @@ use ratatui::Frame;
 
 use crate::state::{App, AppStatus};
 
+pub mod footer;
+pub mod help;
+
 /// app の状態に応じて画面全体を再描画する。
 ///
 /// 引数:
@@ -65,7 +68,7 @@ pub fn render(f: &mut Frame<'_>, app: &App) {
         f.render_widget(header_widget(app), header_area);
         f.render_widget(body_placeholder(), body_area);
         f.render_widget(banner_widget(msg, app), banner_area);
-        f.render_widget(footer_widget(), footer_area);
+        footer::render(f, app, footer_area);
     } else {
         let [header_area, body_area, footer_area] = Layout::vertical([
             Constraint::Length(1),
@@ -75,7 +78,12 @@ pub fn render(f: &mut Frame<'_>, app: &App) {
         .areas(area);
         f.render_widget(header_widget(app), header_area);
         f.render_widget(body_placeholder(), body_area);
-        f.render_widget(footer_widget(), footer_area);
+        footer::render(f, app, footer_area);
+    }
+
+    // help overlay は最後に重ねる (issue #33)。ベースレイアウトと独立。
+    if app.show_help {
+        help::render_overlay(f, area);
     }
 }
 
@@ -117,14 +125,8 @@ fn banner_widget<'a>(msg: &'a str, app: &App) -> Paragraph<'a> {
     Paragraph::new(Line::from(Span::styled(msg.to_string(), style)))
 }
 
-fn footer_widget() -> Paragraph<'static> {
-    // CLAUDE.md のキー割り当てに従って最低限のヒントだけ出す。完全な help は
-    // F1 / ? overlay (#33) で別途実装する。
-    Paragraph::new(Line::from(Span::styled(
-        "q / F10  Quit",
-        Style::default().add_modifier(Modifier::DIM),
-    )))
-}
+// footer の組み立ては `ui::footer::render` に移動 (issue #33)。
+// `App::sort` / `App::filter` 状態を読みつつ、help モーダルとの整合を取るため。
 
 #[cfg(test)]
 mod tests {
@@ -164,8 +166,45 @@ mod tests {
             out.contains("waiting for first VTS snapshot"),
             "out:\n{out}"
         );
-        // footer
-        assert!(out.contains("Quit"), "out:\n{out}");
+        // footer (F1 Help が掲載されている / Sort 状態が表示される)
+        assert!(out.contains("F1Help"), "footer missing F1Help:\n{out}");
+        assert!(out.contains("Sort:"), "footer missing Sort:\n{out}");
+    }
+
+    #[test]
+    fn footer_renders_filter_when_set() {
+        let mut app = App::new();
+        app.filter = "api".to_string();
+        let out = draw_to_string(&app, 100, 5);
+        assert!(
+            out.contains("Filter: api"),
+            "footer should render filter:\n{out}"
+        );
+    }
+
+    #[test]
+    fn help_overlay_only_shown_when_show_help() {
+        // show_help=false の通常画面に "key bindings" は出ない
+        let mut app = App::new();
+        assert!(!app.show_help);
+        let normal = draw_to_string(&app, 80, 24);
+        assert!(
+            !normal.contains("key bindings"),
+            "help should NOT appear by default:\n{normal}"
+        );
+
+        // show_help=true でモーダルが出現
+        app.show_help = true;
+        let with_help = draw_to_string(&app, 80, 24);
+        assert!(
+            with_help.contains("key bindings"),
+            "help should appear when show_help:\n{with_help}"
+        );
+        // letter alias 案内も入る
+        assert!(
+            with_help.contains("? = F1"),
+            "help should include letter alias:\n{with_help}"
+        );
     }
 
     #[test]
@@ -201,7 +240,8 @@ mod tests {
         let out = draw_to_string(&app, 80, 5);
         // 各種ラベルが出ていれば OK (banner 行を持たない 3 段レイアウト)
         assert!(out.contains("Connecting"), "out:\n{out}");
-        assert!(out.contains("Quit"), "out:\n{out}");
+        // footer 由来の Help ヒント
+        assert!(out.contains("F1Help"), "out:\n{out}");
     }
 
     #[test]

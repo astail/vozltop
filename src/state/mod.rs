@@ -138,6 +138,12 @@ pub struct App {
     /// `main.rs` 起動時に `Theme::from_args(&args)` で確定する。テストや
     /// `App::new()` 経由では `Theme::default()` (= color) が入る。
     pub theme: Theme,
+    /// F1 / `?` で開閉する help overlay の表示有無 (issue #33)。
+    ///
+    /// `true` で `src/ui/help.rs` がモーダルを画面中央に重ねる。`Esc` で
+    /// 閉じる。詳細オーバーレイ (`detail_zone`) や filter / sort 状態とは
+    /// 独立に扱う (互いを排他しない)。
+    pub show_help: bool,
 }
 
 impl Default for App {
@@ -165,6 +171,7 @@ impl App {
             detail_zone: None,
             error_banner: None,
             theme,
+            show_help: false,
         }
     }
 
