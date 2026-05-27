@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Discussions (質問 / アイデア相談)
+    url: https://github.com/astail/vozltop/discussions
+    about: バグ/機能要望以外の議論や質問は Discussions でお願いします。
+  - name: セキュリティ脆弱性の報告
+    url: https://github.com/astail/vozltop/security/advisories/new
+    about: 脆弱性は public issue ではなく Private Vulnerability Reporting で報告してください。詳細は SECURITY.md。
