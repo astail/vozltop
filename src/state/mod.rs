@@ -154,6 +154,12 @@ pub struct App {
     /// `ui::table::render` が描画領域の本体高さに合わせて毎フレーム更新する。
     /// 描画前は安全側で 10 行。
     pub page_size: Cell<usize>,
+    /// F1 / `?` で開閉する help overlay の表示有無 (issue #33)。
+    ///
+    /// `true` で `src/ui/help.rs` がモーダルを画面中央に重ねる。`Esc` で
+    /// 閉じる。詳細オーバーレイ (`detail_zone`) や filter / sort 状態とは
+    /// 独立に扱う (互いを排他しない)。
+    pub show_help: bool,
 }
 
 impl Default for App {
@@ -185,6 +191,7 @@ impl App {
             // 安全側のデフォルト。最初の render が走るまで PgUp/PgDn が完全に
             // no-op にならないよう、画面の半分弱に相当する 10 行を仮置きする。
             page_size: Cell::new(10),
+            show_help: false,
         }
     }
 
