@@ -35,7 +35,7 @@ use std::time::Duration;
 use clap::Parser;
 use color_eyre::eyre::{Result, WrapErr};
 use crossterm::cursor::Hide;
-use crossterm::event::EventStream;
+use crossterm::event::{EventStream, KeyCode};
 use crossterm::execute;
 use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
 use futures_util::StreamExt;
@@ -166,9 +166,27 @@ async fn event_loop(
                         if let Some(app_ev) = map_event(crossterm_ev) {
                             match app_ev {
                                 AppEvent::Quit => break,
-                                AppEvent::Key(_) | AppEvent::Resize(_, _) => {
-                                    // 後続 issue (#28+: ソート/フィルタ/カーソル) で
-                                    // ここに分岐を増やす。本 PR では再描画だけ。
+                                AppEvent::Key(k) => {
+                                    // issue #28: カーソル移動。ソート / フィルタは #31。
+                                    // CLAUDE.md のキー割り当てに従う:
+                                    //   ↑ / k → 1 行上
+                                    //   ↓ / j → 1 行下
+                                    //   PgUp / PgDn → 1 ページぶん移動
+                                    match k.code {
+                                        KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+                                            app.cursor_up();
+                                        }
+                                        KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+                                            app.cursor_down();
+                                        }
+                                        KeyCode::PageUp => app.cursor_page_up(),
+                                        KeyCode::PageDown => app.cursor_page_down(),
+                                        _ => {}
+                                    }
+                                }
+                                AppEvent::Resize(_, _) => {
+                                    // resize 自体は再描画だけで吸収する (TableState が
+                                    // 自動でスクロールを再計算)。
                                 }
                                 AppEvent::Tick(_) | AppEvent::FetchErr(_) => {
                                     // crossterm の Event 由来からは出ない variant。
