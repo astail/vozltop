@@ -10,6 +10,7 @@ pub mod model;
 pub mod state;
 pub mod terminal;
 pub mod theme;
+pub mod ui;
 
 /// テスト同期用のユーティリティ。
 ///
