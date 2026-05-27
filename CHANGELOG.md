@@ -14,6 +14,9 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 ### Added
 
 - 依存ライブラリの major bump 追従手順を `docs/DEPENDENCY_POLICY.md` に明文化 (#13)
+- `--user user:-` で stdin から password を読み取れるようにした (#40)
+- `--header @path/to/file` でファイルからヘッダ 1 行を読み込めるようにした (#40)
+- `VOZLTOP_PASSWORD` 環境変数で `--user` の password を上書きできるようにした (#40)
 
 ### Changed
 
@@ -33,6 +36,6 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 
 ### Security
 
-- （セキュリティ修正をここに追加）
+- argv に password / Bearer トークンが平文で乗っていると起動時に stderr で警告するようにした (`ps` 経由の漏洩を防ぐ案内) (#40)
 
 [unreleased]: https://github.com/astail/vozltop/commits/main

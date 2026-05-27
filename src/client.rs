@@ -77,12 +77,19 @@ impl VtsClient {
             .build()
             .wrap_err("failed to build reqwest::Client")?;
 
-        let basic_auth = args.user.clone();
+        // issue #40: VOZLTOP_PASSWORD 環境変数 / --user user:- (stdin) を解決。
+        // reqwest 構築の問題を先に出すため build() の後に解決する。
+        let basic_auth = args
+            .resolved_user()
+            .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
 
         // build() が成功した後で初めて警告する。
         // build() 失敗時に「警告だけ見せて死ぬ」混乱を避けるため。
         if args.insecure {
             warn_insecure(args.no_color_effective());
+        }
+        if crate::cli::detect_argv_secret() {
+            warn_argv_secrets(args.no_color_effective());
         }
 
         Ok(Self {
@@ -235,6 +242,27 @@ fn warn_insecure(no_color: bool) {
             eprintln!("{msg}");
         } else {
             // \x1b[1;33m = bold yellow, \x1b[0m = reset
+            eprintln!("\x1b[1;33m{msg}\x1b[0m");
+        }
+    });
+}
+
+/// argv に password / Bearer トークンが平文で乗っているときの起動時警告 (issue #40)。
+///
+/// 共有ホストでは `ps` 出力に argv が見えるため、`--user user:pass` や
+/// `--header 'Authorization: Bearer ...'` を直接渡すと他ユーザに漏れる。
+/// 回避策 (env / @file / stdin) を 1 行で示す。
+///
+/// stderr 出力 + ANSI 黄色 (太字)。`OnceLock` で 1 度きり。
+fn warn_argv_secrets(no_color: bool) {
+    static WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    WARNED.get_or_init(|| {
+        let msg = "WARNING: secrets in argv are visible to other users via `ps`. \
+                   Consider using VOZLTOP_PASSWORD env, --user user:- (stdin), \
+                   or --header @file to avoid exposing them.";
+        if no_color {
+            eprintln!("{msg}");
+        } else {
             eprintln!("\x1b[1;33m{msg}\x1b[0m");
         }
     });

@@ -105,13 +105,19 @@ vozltop <URL> [OPTIONS]
 
 OPTIONS:
   -i, --interval <SECONDS>  リフレッシュ間隔 [default: 1.0]
-  -u, --user <USER:PASS>    HTTP Basic 認証
-  -H, --header <K: V>       追加ヘッダ（繰り返し可）
+  -u, --user <USER:PASS>    HTTP Basic 認証 (password が `-` の場合 stdin から読み取り)
+  -H, --header <K: V>       追加ヘッダ（繰り返し可。`@path/to/file` でファイル読込）
       --insecure            TLS 証明書検証を無効化
       --no-color            色を無効化（環境変数 NO_COLOR=1 でも同等）
+
+ENV:
+  VOZLTOP_PASSWORD          設定時は `--user` の password を上書き（argv に secrets を残さないため）
+  NO_COLOR                  非空でセットされていれば色を無効化（https://no-color.org）
 ```
 
 `NO_COLOR` 環境変数がセットされている場合、`--no-color` 指定が無くても自動的にモノクロ描画にフォールバックする（https://no-color.org に準拠）。
+
+argv に password / Bearer トークンが残っていると起動時に stderr に黄色で警告が 1 度出る (issue #40)。共有マシンでは `VOZLTOP_PASSWORD` / `--user user:-` / `--header @file` のいずれかを使う。
 
 ## 開発フロー
 
