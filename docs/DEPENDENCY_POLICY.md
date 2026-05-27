@@ -3,8 +3,8 @@
 `ratatui` / `crossterm` / `reqwest` / `tokio` などコアの依存が major bump
 した時に「壊さず追従する」ための運用手順を定める。
 
-将来 [`CONTRIBUTING.md`](https://github.com/astail/vozltop/issues/3) が整備された段階で、
-本ドキュメントは CONTRIBUTING.md からリンクされる予定（issue #3）。
+将来 `CONTRIBUTING.md` ([issue #3](https://github.com/astail/vozltop/issues/3)) が整備された段階で、
+本ドキュメントは CONTRIBUTING.md からリンクされる予定。
 
 ---
 
