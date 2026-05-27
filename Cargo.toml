@@ -28,6 +28,8 @@ url = "2"
 
 [dev-dependencies]
 pretty_assertions = "1"
+# issue #36: integration test 用の HTTP mock サーバ。tokio runtime で動く。
+wiremock = "0.6"
 
 [profile.release]
 lto = "thin"
