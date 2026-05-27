@@ -1,20 +1,25 @@
 //! 画面下端の常時 footer (issue #33)。
 //!
-//! 左側: キー割り当てのヒント (htop 風)。
-//! 右側: 現在のソート列 / 方向、Filter 状態。
+//! 左側 (`hints` 領域): キー割り当てのヒント (htop 風)。
+//! 右側 (`status` 領域): 現在のソート列 / 方向、Filter 状態。
 //!
-//! 80x24 で 1 行に収めるため、表記は短く保つ:
+//! 80x24 で 1 行に収めるため、`Layout::horizontal` で固定幅に分割する:
 //!
 //! ```text
-//! F1Help F4Filter F5Sort F10Quit  Tab:NextZone Enter:Detail            Sort: Col1 ↓  Filter: foo
+//! F1Help F4Filter F5Sort F10Quit  Tab:Zone Enter:Detail     Sort: ZONE ↓ Filter: abc
+//! ├──────────── hints (Min 40 桁) ──────────────────────────┤├── status (Length 30) ─┤
 //! ```
+//!
+//! status 領域の幅を超える長い Filter は ratatui の Paragraph が右端で
+//! truncate する (改行はしない)。詳細を確認したい場合は F1 / `?` の
+//! help モーダルを参照する設計。
 //!
 //! letter alias (`?`, `/`, `q`) は help overlay (F1) 側で案内する。footer の
 //! ヒントは F-key の表記に統一し、ターミナル幅を圧迫しないようにする。
 //!
 //! v1 未実装の `F2 Setup` / `F3` は **掲載しない** (#33 受け入れ条件)。
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -24,25 +29,39 @@ use crate::state::{App, Tab};
 
 /// キー割り当てヒント。`render` が左寄せで表示する固定文字列。
 ///
-/// 80 桁前提でも収まるよう 60 桁以内に抑える (右側のステータスと干渉しない)。
-pub const KEY_HINTS: &str = "F1Help F4Filter F5Sort F10Quit  Tab:NextZone Enter:Detail";
+/// 80 桁前提で hints 領域 (T - 30 桁) に収まるよう 50 桁以下に保つ。
+/// 80x24 のとき hints = 50 桁、status = 30 桁。spec の `Tab:NextZone Enter:Detail`
+/// は 80 桁では truncate するため、`Tab:Zone Enter` に短縮し help modal で
+/// 詳細補足する設計 (issue #33 PR セルフレビュー)。
+pub const KEY_HINTS: &str = "F1Help F4Filter F5Sort F10Quit  Tab:Zone Enter";
 
 /// 画面下端 1 行に footer を描画する。
+///
+/// 左側 (Min 40 桁) にキー hint、右側 (Length 30 桁) にソート / フィルタ状態。
+/// 80 桁未満のときは status 側が縮み、最終的に truncate される。
 pub fn render(f: &mut Frame<'_>, app: &App, area: Rect) {
-    f.render_widget(footer_paragraph(app), area);
+    // hints と status を Layout::horizontal で分離する。これにより:
+    // - 80 桁時: hints 50 / status 30 で sort+filter が両方収まる
+    // - 100 桁時: hints 70 / status 30 で余白が hints 側に行く
+    // - 狭いターミナル時: hints が縮み、必要なら status が clip される
+    let [hints_area, status_area] =
+        Layout::horizontal([Constraint::Min(40), Constraint::Length(30)]).areas(area);
+    f.render_widget(hints_paragraph(), hints_area);
+    f.render_widget(status_paragraph(app), status_area);
 }
 
-/// footer の `Paragraph` を組み立てる (テスト用に切り出し)。
-fn footer_paragraph(app: &App) -> Paragraph<'_> {
-    // 左ヒント / 右ステータスを 1 行に並べる。ratatui の `Paragraph` は
-    // alignment が一括指定のため、左ヒント・スペーサー・右ステータスを
-    // Span として連結し、ターミナル幅に依存しない簡易構成にする。
-    let mut spans: Vec<Span<'_>> = Vec::with_capacity(6);
-    spans.push(Span::styled(KEY_HINTS, Style::default()));
-    spans.push(Span::raw("  "));
-    spans.push(Span::styled(sort_label(app), Style::default()));
+/// 左側: 固定キー hint。
+fn hints_paragraph() -> Paragraph<'static> {
+    Paragraph::new(Line::from(Span::raw(KEY_HINTS)))
+        .style(Style::default().add_modifier(Modifier::DIM))
+}
+
+/// 右側: ソート + Filter 状態。Filter が非空なら追加表示。
+fn status_paragraph(app: &App) -> Paragraph<'_> {
+    let mut spans: Vec<Span<'_>> = Vec::with_capacity(3);
+    spans.push(Span::raw(sort_label(app)));
     if !app.filter.is_empty() {
-        spans.push(Span::raw("  "));
+        spans.push(Span::raw(" "));
         spans.push(Span::styled(
             filter_label(&app.filter),
             Style::default().add_modifier(Modifier::BOLD),
@@ -99,11 +118,12 @@ mod tests {
 
     #[test]
     fn key_hints_fit_in_80_columns() {
-        // 右側のソートステータス + スペーサーも含めて 80 桁に収めるための上限。
-        // 受け入れ条件: 80x24 で footer が 1 行に収まる。
+        // Layout::horizontal で hints (Min 40) + status (Length 30) に分けるため、
+        // 80 桁時の hints 領域は 50 桁。KEY_HINTS が 50 桁を超えると右端で truncate。
+        // 受け入れ条件 "80x24 で footer が 1 行に収まる" を実質満たすため 50 桁以下に。
         assert!(
-            KEY_HINTS.chars().count() <= 60,
-            "KEY_HINTS too long ({}): {KEY_HINTS}",
+            KEY_HINTS.chars().count() <= 50,
+            "KEY_HINTS too long ({}) for 80-col hints region: {KEY_HINTS}",
             KEY_HINTS.chars().count()
         );
     }
@@ -162,6 +182,46 @@ mod tests {
     fn column_name_zero_is_zone_for_all_tabs() {
         for tab in [Tab::Server, Tab::Upstream, Tab::Cache] {
             assert_eq!(column_name(tab, 0), "ZONE");
+        }
+    }
+
+    /// 80 桁ターミナルで全ての情報 (キーヒント + Sort + Filter) が
+    /// 1 行に収まり truncate されないことを TestBackend で検証する。
+    /// セルフレビュー指摘 (PR #91) に対する回帰防止テスト。
+    #[test]
+    fn rendered_footer_fits_within_80_columns_without_truncation() {
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Rect;
+        use ratatui::Terminal;
+
+        let mut app = App::new();
+        app.filter = "api".to_string(); // 短めの典型的な filter
+
+        let backend = TestBackend::new(80, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| super::render(f, &app, Rect::new(0, 0, 80, 1)))
+            .unwrap();
+
+        let buf = terminal.backend().buffer().clone();
+        let mut line = String::new();
+        for x in 0..buf.area.width {
+            line.push_str(buf[(x, 0)].symbol());
+        }
+
+        // 必須トークンが全て出現すること
+        for token in [
+            "F1Help",
+            "F4Filter",
+            "F5Sort",
+            "F10Quit",
+            "Sort:",
+            "Filter: api",
+        ] {
+            assert!(
+                line.contains(token),
+                "footer at 80 cols should include `{token}`:\n[{line}]"
+            );
         }
     }
 }
