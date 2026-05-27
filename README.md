@@ -64,11 +64,17 @@ vozltop https://nginx.example.com/status/format/json \
   --header 'Authorization: Bearer eyJ...'
 ```
 
-自己署名証明書を許容:
+### TLS 検証
+
+既定では reqwest の **rustls-tls-native-roots** バックエンドで OS の信頼ストア (macOS Keychain / Linux のシステム CA 等) を読み込みます。社内 CA を OS に登録していれば追加設定なしで HTTPS が通ります。
+
+自己署名・期限切れ証明書を許容 (信頼できるネットワークでのみ使用):
 
 ```bash
 vozltop https://nginx.example.com/status/format/json --insecure
 ```
+
+> ⚠️ `--insecure` は **TLS 証明書検証を完全に無効化** します。Use only on trusted networks. 起動時に stderr に黄色で警告が 1 度出ます。社内 CA を使いたいだけなら `--insecure` ではなく OS の信頼ストアへの CA 登録を推奨します。
 
 色を無効化（`--no-color` フラグまたは `NO_COLOR` 環境変数。両方とも [no-color.org](https://no-color.org) に準拠）:
 

@@ -223,6 +223,10 @@ impl From<reqwest::Error> for FetchError {
 ///
 /// プロセス起動中に複数回 `VtsClient::new()` が呼ばれても (将来の reconnect
 /// ロジック等)、警告が運用ログを汚さないよう `OnceLock` で 1 度きりに絞る。
+///
+/// TUI 上の常時 banner 表示 (`Connection insecure`) は header UI 実装時
+/// (issue #27) に `App` 側で `args.insecure` を参照して描画する。issue #39 の
+/// TUI banner 要件はその時点で完了とする。
 fn warn_insecure(no_color: bool) {
     static WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     WARNED.get_or_init(|| {
