@@ -49,7 +49,7 @@ crossterm events (key, resize, ctrl-c)
 - `crossterm` 0.29+ (`event-stream`) — ターミナルバックエンド + 非同期 `EventStream`
 - `tokio` (`rt`, `macros`, `time`, `signal`) — 非同期ランタイム（シングルスレッド）
 - `futures-util` — `EventStream` への `StreamExt::next()` 適用（`tokio-stream` ではなく `futures` 側を使う）
-- `reqwest` (`rustls-tls`, `json`) — HTTP（OpenSSL 不使用でクロスコンパイル容易）。`--insecure` 用に `danger_accept_invalid_certs` を利用
+- `reqwest` (`rustls-tls-native-roots`, `json`, `gzip`) — HTTP（OpenSSL 不使用でクロスコンパイル容易）。**既定で OS の信頼ストアを使用** (社内 CA 等の追加設定不要)。`--insecure` 用に `danger_accept_invalid_certs` を利用 (詳細は issue #39 / SECURITY.md)
 - `serde` + `serde_json` — vts JSON デシリアライズ
 - `clap` v4 (`derive`) — CLI パース
 - `color-eyre` — エラーレポート
@@ -105,13 +105,19 @@ vozltop <URL> [OPTIONS]
 
 OPTIONS:
   -i, --interval <SECONDS>  リフレッシュ間隔 [default: 1.0]
-  -u, --user <USER:PASS>    HTTP Basic 認証
-  -H, --header <K: V>       追加ヘッダ（繰り返し可）
+  -u, --user <USER:PASS>    HTTP Basic 認証 (password が `-` の場合 stdin から読み取り)
+  -H, --header <K: V>       追加ヘッダ（繰り返し可。`@path/to/file` でファイル読込）
       --insecure            TLS 証明書検証を無効化
       --no-color            色を無効化（環境変数 NO_COLOR=1 でも同等）
+
+ENV:
+  VOZLTOP_PASSWORD          設定時は `--user` の password を上書き（argv に secrets を残さないため）
+  NO_COLOR                  非空でセットされていれば色を無効化（https://no-color.org）
 ```
 
 `NO_COLOR` 環境変数がセットされている場合、`--no-color` 指定が無くても自動的にモノクロ描画にフォールバックする（https://no-color.org に準拠）。
+
+argv に password / Bearer トークンが残っていると起動時に stderr に黄色で警告が 1 度出る (issue #40)。共有マシンでは `VOZLTOP_PASSWORD` / `--user user:-` / `--header @file` のいずれかを使う。
 
 ## 開発フロー
 
