@@ -171,8 +171,11 @@ async fn event_loop(
                                     // ここに分岐を増やす。本 PR では再描画だけ。
                                 }
                                 AppEvent::Tick(_) | AppEvent::FetchErr(_) => {
-                                    // crossterm の Event 由来からは出ない variant。
-                                    debug_assert!(false, "map_event は Tick/FetchErr を作らない");
+                                    // `map_event` の契約上、crossterm Event 由来では
+                                    // 生成されない variant。リリースビルドでも気付けるよう
+                                    // `unreachable!` で明示する (debug_assert! と異なり release
+                                    // でも panic する; never 型扱いで match arm が締まる)。
+                                    unreachable!("map_event は Tick/FetchErr を作らない");
                                 }
                             }
                         }
