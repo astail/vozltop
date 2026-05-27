@@ -35,7 +35,7 @@ use std::time::Duration;
 use clap::Parser;
 use color_eyre::eyre::{Result, WrapErr};
 use crossterm::cursor::Hide;
-use crossterm::event::EventStream;
+use crossterm::event::{EventStream, KeyCode, KeyEvent};
 use crossterm::execute;
 use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
 use futures_util::StreamExt;
@@ -166,13 +166,16 @@ async fn event_loop(
                         if let Some(app_ev) = map_event(crossterm_ev) {
                             match app_ev {
                                 AppEvent::Quit => break,
-                                AppEvent::Key(_) | AppEvent::Resize(_, _) => {
-                                    // 後続 issue (#28+: ソート/フィルタ/カーソル) で
-                                    // ここに分岐を増やす。本 PR では再描画だけ。
+                                AppEvent::Key(k) => handle_key(app, k),
+                                AppEvent::Resize(_, _) => {
+                                    // ratatui の `terminal.draw` が autoresize するので、
+                                    // 本ループ末尾の再描画でカバーされる。
                                 }
                                 AppEvent::Tick(_) | AppEvent::FetchErr(_) => {
-                                    // crossterm の Event 由来からは出ない variant。
-                                    debug_assert!(false, "map_event は Tick/FetchErr を作らない");
+                                    // `map_event` の契約上、crossterm Event 由来では
+                                    // 生成されない variant。リリースビルドでも気付けるよう
+                                    // `unreachable!` で明示する。
+                                    unreachable!("map_event は Tick/FetchErr を作らない");
                                 }
                             }
                         }
@@ -197,6 +200,29 @@ async fn event_loop(
     }
 
     Ok(())
+}
+
+/// `AppEvent::Key` を `App` に反映する純関数。
+///
+/// 本 PR (#33) で扱うキーは F1 / `?` / Esc のみ。後続 issue (#28+ / #31 / #32)
+/// で table カーソル / ソート / フィルタ / 詳細オーバーレイ向けの分岐を増やす。
+///
+/// テスト容易性のため `App` への &mut 操作だけを引数に取り、terminal/IO は触らない。
+fn handle_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        // F1 / `?` で help モーダルを toggle (#33 受け入れ条件)。`?` は letter alias。
+        KeyCode::F(1) | KeyCode::Char('?') => {
+            app.show_help = !app.show_help;
+        }
+        // Esc は help / detail / filter を順に閉じる。本 PR では help のみ扱う。
+        // detail / filter は #31 / #32 で同じ Esc に挙動を足す予定。
+        KeyCode::Esc if app.show_help => {
+            app.show_help = false;
+        }
+        _ => {
+            // 残りのキー (Tab / 矢印 / 1-9 / F4 / F5 / Enter 等) は後続 issue で実装。
+        }
+    }
 }
 
 /// `client.fetch()` を spawn し、結果を `tx` 経由で push する task を作る。
@@ -246,5 +272,69 @@ async fn sigterm_future() {
     #[cfg(not(unix))]
     {
         std::future::pending::<()>().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyEventKind, KeyEventState, KeyModifiers};
+
+    fn press(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
+
+    #[test]
+    fn f1_toggles_help_overlay() {
+        let mut app = App::new();
+        assert!(!app.show_help);
+        handle_key(&mut app, press(KeyCode::F(1)));
+        assert!(app.show_help, "F1 should open help");
+        handle_key(&mut app, press(KeyCode::F(1)));
+        assert!(!app.show_help, "F1 again should close help");
+    }
+
+    #[test]
+    fn question_mark_is_letter_alias_for_f1() {
+        // macOS Terminal.app が F1 を奪うため、? を letter alias として受け付ける
+        // (CLAUDE.md / issue #33 受け入れ条件)。
+        let mut app = App::new();
+        handle_key(&mut app, press(KeyCode::Char('?')));
+        assert!(app.show_help, "? should open help");
+        handle_key(&mut app, press(KeyCode::Char('?')));
+        assert!(!app.show_help, "? again should close help");
+    }
+
+    #[test]
+    fn esc_closes_help_when_open() {
+        let mut app = App::new();
+        app.show_help = true;
+        handle_key(&mut app, press(KeyCode::Esc));
+        assert!(!app.show_help, "Esc should close help");
+    }
+
+    #[test]
+    fn esc_is_noop_when_help_is_already_closed() {
+        // 後続 issue (#31 / #32) で Esc は filter / detail を閉じるためにも使う。
+        // 本 PR では help が closed のとき Esc は no-op (= 他状態に副作用無し)。
+        let mut app = App::new();
+        app.show_help = false;
+        // Esc を打っても show_help は false のまま、他フィールドにも触らない。
+        handle_key(&mut app, press(KeyCode::Esc));
+        assert!(!app.show_help);
+    }
+
+    #[test]
+    fn unrelated_keys_do_not_change_help_state() {
+        let mut app = App::new();
+        handle_key(&mut app, press(KeyCode::Tab));
+        handle_key(&mut app, press(KeyCode::Char('x')));
+        handle_key(&mut app, press(KeyCode::F(5)));
+        assert!(!app.show_help);
     }
 }

@@ -9,7 +9,7 @@
 //! - issue #32: 詳細オーバーレイ
 //! - issue #33: footer + help
 //!
-//! ## レイアウト方針 (issue #27 以降)
+//! ## レイアウト方針 (issue #27 / #33 統合後)
 //!
 //! ```text
 //! ┌──────────────────────────────────────────────────────────────────┐
@@ -25,9 +25,12 @@
 //! ├──────────────────────────────────────────────────────────────────┤
 //! │ HTTP 500 Internal Server Error                                    │  <- error banner (任意、1 行)
 //! ├──────────────────────────────────────────────────────────────────┤
-//! │ q/F10 Quit                                                        │  <- footer (1 行)
+//! │ F1Help F4Filter F5Sort F10Quit  Tab:Zone Enter  Sort: ZONE ↓     │  <- footer (1 行, #33)
 //! └──────────────────────────────────────────────────────────────────┘
 //! ```
+//!
+//! `app.show_help == true` のときは上記レイアウトの上に help モーダル
+//! (`src/ui/help.rs`) を `Clear` で重ねて描画する。
 //!
 //! ## 高さ要件
 //!
@@ -35,7 +38,9 @@
 //! `Fill(1)` を本体に置き、極端な resize で本体が 0 行になっても破綻しない
 //! 構成にしている。
 
+pub mod footer;
 pub mod header;
+pub mod help;
 
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
@@ -81,7 +86,15 @@ pub fn render(f: &mut Frame<'_>, app: &App) {
         f.render_widget(banner_widget(msg, app), rows[idx]);
         idx += 1;
     }
-    f.render_widget(footer_widget(), rows[idx]);
+    // 旧 footer_widget() は issue #33 で footer::render に置き換え。
+    // App::sort / App::filter を読むため引数化が必要。
+    footer::render(f, app, rows[idx]);
+
+    // help overlay は最後に重ねる (issue #33)。base layout と独立に描く。
+    // detail / filter overlay (#31 / #32) とも排他しない設計。
+    if app.show_help {
+        help::render_overlay(f, area);
+    }
 }
 
 fn body_placeholder() -> Paragraph<'static> {
@@ -102,15 +115,6 @@ fn banner_widget<'a>(msg: &'a str, app: &App) -> Paragraph<'a> {
         app.theme.error_banner
     };
     Paragraph::new(Line::from(Span::styled(msg.to_string(), style)))
-}
-
-fn footer_widget() -> Paragraph<'static> {
-    // CLAUDE.md のキー割り当てに従って最低限のヒントだけ出す。完全な help は
-    // F1 / ? overlay (#33) で別途実装する。
-    Paragraph::new(Line::from(Span::styled(
-        "q / F10  Quit",
-        Style::default().add_modifier(Modifier::DIM),
-    )))
 }
 
 #[cfg(test)]
@@ -140,7 +144,7 @@ mod tests {
     #[test]
     fn renders_3_row_header_with_conn_rps_bw_labels() {
         let app = App::new();
-        let out = draw_to_string(&app, 80, 6);
+        let out = draw_to_string(&app, 80, 8);
         // 行 1: Conn ラベル
         assert!(out.contains("Conn"), "out:\n{out}");
         // 行 2: RPS ラベル
@@ -149,12 +153,50 @@ mod tests {
         assert!(out.contains("in"), "out:\n{out}");
         assert!(out.contains("out"), "out:\n{out}");
         assert!(out.contains("0 B/s"), "out:\n{out}");
-        // body プレースホルダ + footer
+        // body プレースホルダ
         assert!(
             out.contains("waiting for first VTS snapshot"),
             "out:\n{out}"
         );
-        assert!(out.contains("Quit"), "out:\n{out}");
+        // footer (#33: F1Help + Sort 表示)
+        assert!(out.contains("F1Help"), "footer missing F1Help:\n{out}");
+        assert!(out.contains("Sort:"), "footer missing Sort:\n{out}");
+    }
+
+    #[test]
+    fn footer_renders_filter_when_set() {
+        let mut app = App::new();
+        app.filter = "api".to_string();
+        let out = draw_to_string(&app, 100, 8);
+        assert!(
+            out.contains("Filter: api"),
+            "footer should render filter:\n{out}"
+        );
+    }
+
+    #[test]
+    fn help_overlay_only_shown_when_show_help() {
+        // show_help=false の通常画面に "key bindings" は出ない
+        let mut app = App::new();
+        assert!(!app.show_help);
+        let normal = draw_to_string(&app, 80, 24);
+        assert!(
+            !normal.contains("key bindings"),
+            "help should NOT appear by default:\n{normal}"
+        );
+
+        // show_help=true でモーダルが出現
+        app.show_help = true;
+        let with_help = draw_to_string(&app, 80, 24);
+        assert!(
+            with_help.contains("key bindings"),
+            "help should appear when show_help:\n{with_help}"
+        );
+        // letter alias 案内も入る
+        assert!(
+            with_help.contains("? = F1"),
+            "help should include letter alias:\n{with_help}"
+        );
     }
 
     #[test]
@@ -213,10 +255,11 @@ mod tests {
     #[test]
     fn renders_without_banner_when_no_error() {
         let app = App::new();
-        let out = draw_to_string(&app, 80, 6);
+        let out = draw_to_string(&app, 80, 8);
         // 通常時はヘッダの 3 行 + body + footer
         assert!(out.contains("Conn"), "out:\n{out}");
-        assert!(out.contains("Quit"), "out:\n{out}");
+        // footer 由来の F1 hint
+        assert!(out.contains("F1Help"), "out:\n{out}");
     }
 
     #[test]
