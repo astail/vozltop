@@ -17,9 +17,11 @@ clap = { version = "4", features = ["derive"] }
 color-eyre = "0.6"
 crossterm = { version = "0.29", features = ["event-stream"] }
 futures-util = { version = "0.3", default-features = false }
-# crossterm backend は main の crossterm 0.29 と二重持ちになるため一旦無効化。
-# UI loop 実装時 (issue #25) に ratatui 0.30 or feature 再有効化を判断する。
-ratatui = { version = "0.29", default-features = false }
+# issue #25: ratatui 既定の crossterm backend を再有効化。これにより transitive
+# に crossterm 0.28 が同居するが (event loop 側は 0.29 を直接使用)、deny.toml の
+# `multiple-versions = "warn"` 設定で CI は通る (PR #84)。ratatui 0.30 +
+# ratatui-crossterm への移行で 0.29 に統一する案は別途 issue #14 で検討する。
+ratatui = "0.29"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "gzip"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
