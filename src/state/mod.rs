@@ -14,6 +14,7 @@
 //! - issue #25-: tokio::select! ループ + ratatui 描画
 //! - issue #28-30: ソート / フィルタ / 詳細ビュー
 
+use std::cell::Cell;
 use std::time::Instant;
 
 use crate::client::FetchError;
@@ -138,6 +139,21 @@ pub struct App {
     /// `main.rs` 起動時に `Theme::from_args(&args)` で確定する。テストや
     /// `App::new()` 経由では `Theme::default()` (= color) が入る。
     pub theme: Theme,
+    /// 直近の table render で確定した「現在タブの可視行数」(cursor 上限算出用)。
+    ///
+    /// `ui::table::render` が描画のたびに更新する。cursor 移動メソッド
+    /// (`cursor_down` / `cursor_page_down`) はこの値を上限としてクランプする。
+    /// 描画前 (= snapshot 取得前) は 0。
+    ///
+    /// `Cell<usize>` で interior mutability にしているのは、`ui::render` が
+    /// `&App` を取る既存契約を壊さず、レンダパスから値だけ書き戻すため
+    /// (issue #28 で導入)。
+    pub visible_rows: Cell<usize>,
+    /// 直近の table render で確定した「1 PgUp / PgDn ぶんの移動量」。
+    ///
+    /// `ui::table::render` が描画領域の本体高さに合わせて毎フレーム更新する。
+    /// 描画前は安全側で 10 行。
+    pub page_size: Cell<usize>,
     /// F1 / `?` で開閉する help overlay の表示有無 (issue #33)。
     ///
     /// `true` で `src/ui/help.rs` がモーダルを画面中央に重ねる。`Esc` で
@@ -171,8 +187,38 @@ impl App {
             detail_zone: None,
             error_banner: None,
             theme,
+            visible_rows: Cell::new(0),
+            // 安全側のデフォルト。最初の render が走るまで PgUp/PgDn が完全に
+            // no-op にならないよう、画面の半分弱に相当する 10 行を仮置きする。
+            page_size: Cell::new(10),
             show_help: false,
         }
+    }
+
+    /// `↑` / `k` 相当の cursor 移動。0 を下限に saturating で減らす。
+    pub fn cursor_up(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+    }
+
+    /// `↓` / `j` 相当の cursor 移動。`visible_rows - 1` を上限にクランプ。
+    pub fn cursor_down(&mut self) {
+        let max = self.visible_rows.get().saturating_sub(1);
+        if self.cursor < max {
+            self.cursor += 1;
+        }
+    }
+
+    /// `PgUp` 相当。`page_size` ぶん saturating で減らす。
+    pub fn cursor_page_up(&mut self) {
+        let step = self.page_size.get().max(1);
+        self.cursor = self.cursor.saturating_sub(step);
+    }
+
+    /// `PgDn` 相当。`page_size` ぶん進めて `visible_rows - 1` を上限にクランプ。
+    pub fn cursor_page_down(&mut self) {
+        let step = self.page_size.get().max(1);
+        let max = self.visible_rows.get().saturating_sub(1);
+        self.cursor = self.cursor.saturating_add(step).min(max);
     }
 
     /// バナー描画用の文字列を返す。mono 時のみ `[!] ` プレフィックスを付与する
@@ -277,6 +323,76 @@ mod tests {
         assert!(app.error_banner.is_none());
         // 既定テーマは color。
         assert!(!app.theme.mono);
+        // cursor 移動上限算出用 (issue #28)。初期は 0 行 / 10 行ぶんの「ページ」。
+        assert_eq!(app.visible_rows.get(), 0);
+        assert_eq!(app.page_size.get(), 10);
+    }
+
+    // ---------- cursor 移動 (issue #28) ----------
+
+    #[test]
+    fn cursor_up_saturates_at_zero() {
+        let mut app = App::new();
+        app.visible_rows.set(5);
+        app.cursor_up();
+        assert_eq!(app.cursor, 0);
+        app.cursor = 3;
+        app.cursor_up();
+        assert_eq!(app.cursor, 2);
+    }
+
+    #[test]
+    fn cursor_down_clamps_to_visible_rows_minus_one() {
+        let mut app = App::new();
+        app.visible_rows.set(3);
+        for _ in 0..10 {
+            app.cursor_down();
+        }
+        assert_eq!(app.cursor, 2, "max = visible_rows - 1");
+    }
+
+    #[test]
+    fn cursor_down_with_no_rows_stays_at_zero() {
+        let mut app = App::new();
+        // visible_rows = 0 (default)
+        app.cursor_down();
+        assert_eq!(app.cursor, 0);
+    }
+
+    #[test]
+    fn cursor_page_up_subtracts_page_size_saturating() {
+        let mut app = App::new();
+        app.visible_rows.set(100);
+        app.page_size.set(10);
+        app.cursor = 7;
+        app.cursor_page_up();
+        assert_eq!(app.cursor, 0);
+        app.cursor = 25;
+        app.cursor_page_up();
+        assert_eq!(app.cursor, 15);
+    }
+
+    #[test]
+    fn cursor_page_down_advances_and_clamps() {
+        let mut app = App::new();
+        app.visible_rows.set(50);
+        app.page_size.set(10);
+        app.cursor_page_down();
+        assert_eq!(app.cursor, 10);
+        app.cursor = 45;
+        app.cursor_page_down();
+        assert_eq!(app.cursor, 49, "clamp to visible_rows - 1");
+    }
+
+    #[test]
+    fn cursor_page_methods_treat_zero_page_size_as_one() {
+        let mut app = App::new();
+        app.visible_rows.set(10);
+        app.page_size.set(0);
+        app.cursor_page_down();
+        assert_eq!(app.cursor, 1);
+        app.cursor_page_up();
+        assert_eq!(app.cursor, 0);
     }
 
     #[test]

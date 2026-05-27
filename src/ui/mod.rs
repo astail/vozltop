@@ -41,6 +41,7 @@
 pub mod footer;
 pub mod header;
 pub mod help;
+pub mod table;
 
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
@@ -80,7 +81,9 @@ pub fn render(f: &mut Frame<'_>, app: &App) {
     }
     header::render(f, app, rows[idx]);
     idx += 1;
-    f.render_widget(body_placeholder(), rows[idx]);
+    // body 部は active_tab に応じて Server / Upstream / Cache を描画。
+    // Server は #28 で実装、Upstream は #29、Cache は #30 で埋まる。
+    table::render(f, app, rows[idx]);
     idx += 1;
     if let Some(msg) = banner_msg.as_deref() {
         f.render_widget(banner_widget(msg, app), rows[idx]);
@@ -95,15 +98,6 @@ pub fn render(f: &mut Frame<'_>, app: &App) {
     if app.show_help {
         help::render_overlay(f, area);
     }
-}
-
-fn body_placeholder() -> Paragraph<'static> {
-    // 後続 issue (#28-#30) で widget が埋まるまでの暫定表示。「画面が出ている」
-    // ことを確認するための最低限のヒント。
-    Paragraph::new(Line::from(Span::styled(
-        "waiting for first VTS snapshot…",
-        Style::default().add_modifier(Modifier::DIM),
-    )))
 }
 
 fn banner_widget<'a>(msg: &'a str, app: &App) -> Paragraph<'a> {

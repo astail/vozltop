@@ -168,8 +168,9 @@ async fn event_loop(
                                 AppEvent::Quit => break,
                                 AppEvent::Key(k) => handle_key(app, k),
                                 AppEvent::Resize(_, _) => {
-                                    // ratatui の `terminal.draw` が autoresize するので、
-                                    // 本ループ末尾の再描画でカバーされる。
+                                    // resize 自体は再描画だけで吸収する。ratatui の
+                                    // `terminal.draw` が autoresize し、`TableState` が
+                                    // スクロール位置を再計算する。
                                 }
                                 AppEvent::Tick(_) | AppEvent::FetchErr(_) => {
                                     // `map_event` の契約上、crossterm Event 由来では
@@ -219,8 +220,17 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Esc if app.show_help => {
             app.show_help = false;
         }
+        // issue #28: 行カーソル移動 (CLAUDE.md キー割り当て準拠)。ソート / フィルタは #31。
+        KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+            app.cursor_up();
+        }
+        KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+            app.cursor_down();
+        }
+        KeyCode::PageUp => app.cursor_page_up(),
+        KeyCode::PageDown => app.cursor_page_down(),
         _ => {
-            // 残りのキー (Tab / 矢印 / 1-9 / F4 / F5 / Enter 等) は後続 issue で実装。
+            // 残りのキー (Tab / 1-9 / F4 / F5 / Enter 等) は後続 issue で実装。
         }
     }
 }
