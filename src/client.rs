@@ -169,19 +169,23 @@ async fn read_body_with_limit(
     mut response: reqwest::Response,
     max_bytes: usize,
 ) -> std::result::Result<Vec<u8>, FetchError> {
+    // Content-Length をローカルに束縛して以後 3 経路で使い回す:
+    // (1) プレチェック (2) 初期 capacity 計算 (3) 上限超過時の advertised 報告。
+    // chunked encoding では None のまま。
+    let advertised = response.content_length();
+
     // (1) Content-Length プレチェック
-    if let Some(advertised) = response.content_length() {
-        if advertised > max_bytes as u64 {
+    if let Some(n) = advertised {
+        if n > max_bytes as u64 {
             return Err(FetchError::ResponseTooLarge {
                 limit: max_bytes,
-                advertised: Some(advertised),
+                advertised: Some(n),
             });
         }
     }
 
     // (2) chunked stream を累積で打ち切る
-    let initial = response
-        .content_length()
+    let initial = advertised
         .map(|n| (n as usize).min(INITIAL_BODY_CAPACITY))
         .unwrap_or(8 * 1024);
     let mut body: Vec<u8> = Vec::with_capacity(initial);
@@ -193,7 +197,7 @@ async fn read_body_with_limit(
         if body.len().saturating_add(chunk.len()) > max_bytes {
             return Err(FetchError::ResponseTooLarge {
                 limit: max_bytes,
-                advertised: response.content_length(),
+                advertised,
             });
         }
         body.extend_from_slice(&chunk);
