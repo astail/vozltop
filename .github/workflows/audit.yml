@@ -1,0 +1,48 @@
+name: Security audit
+
+# Dependabot の version-update と組み合わせて 2 段構え:
+# - Dependabot: 新バージョンが出たら PR (能動)
+# - cargo-audit: RustSec advisory DB を週次 + main push でチェック (受動的検知)
+#
+# 高 severity の advisory は audit-check が自動で GitHub issue を起票します。
+# 例外設定が必要になった場合は .cargo/audit.toml を別 PR で追加してください。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/audit.toml"
+      - ".github/workflows/audit.yml"
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/audit.toml"
+      - ".github/workflows/audit.yml"
+  schedule:
+    # 毎週月曜 07:00 UTC (= 16:00 JST)
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+  # スケジュール実行時に高 severity の advisory を GitHub Issue として起票するために必要
+  issues: write
+  # PR/push 実行時にチェック結果を表示するために必要
+  checks: write
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
