@@ -25,7 +25,13 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> Result<()> {
+    // 1. color_eyre::install() で reporting hook を入れる
+    // 2. その「previous」hook を捕まえて、前段に terminal::restore を
+    //    差し込む形で wrap する。順番を逆にすると color_eyre 側の set_hook
+    //    がこちらを上書きしてしまい、panic 時にターミナルが復旧しない
+    //    (issue #42)。
     color_eyre::install()?;
+    vozltop::terminal::install_panic_hook();
     let args = Args::parse();
 
     let client = VtsClient::new(&args)?;

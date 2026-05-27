@@ -110,6 +110,25 @@ footer に `closes #N` / `fixes #N` / `resolves #N` を書いておくと、merg
 
 CI は `cargo test` / `cargo clippy -D warnings` / `cargo fmt --check` を ubuntu / macos の両 OS で実行します。Windows 対応は v1 スコープ外です。
 
+### Panic hook の手動検証 (issue #42)
+
+`src/terminal.rs::install_panic_hook` は raw mode / alternate screen / 隠れカーソルを復旧してから既存 panic hook に流す wrapper を仕込みます。crossterm の terminal 操作は CI (tty 無し) では正しく検証できないため、UI ループや panic hook を触る変更を入れた場合は **手元で 1 度** 以下の手順を踏んでください。
+
+```sh
+cargo run --example panic_terminal
+```
+
+検証項目:
+
+| 確認 | 期待挙動 |
+|------|----------|
+| シェルに戻った直後にプロンプトが見えるか | raw mode が解除されている |
+| 入力文字が echo されるか | raw mode が解除されている |
+| カーソルが点滅して見えるか | `Show` が走っている |
+| `reset` / `stty sane` を打つ必要が無いか | 全部復旧している |
+
+復旧に失敗するケース (例: `color_eyre::install()` の **前** に `install_panic_hook` を呼んでしまった等) では、`reset` を打たないと shell が戻りません。ssh 越しでの運用を想定しているため、この経路が壊れていないことは CI に頼らず必ず人間が確認します。
+
 ### Rust toolchain ポリシー
 
 本プロジェクトは **stable toolchain のみ** をサポートします。MSRV (Minimum Supported Rust Version) は宣言しません — 推移依存が `edition = "2024"` を要求する等の理由で旧 toolchain での再現性を保証できないためです (詳細は issue #79)。
