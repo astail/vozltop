@@ -52,3 +52,16 @@ jobs:
         run: cargo build --all-targets --all-features --locked
       - name: cargo test
         run: cargo test --all-features --locked
+
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    # ライセンス / 重複バージョン / unknown source を弾く (issue #9)。
+    # advisory チェックは audit.yml の cargo-audit が担当し、ここでは扱わない。
+    steps:
+      - uses: actions/checkout@v6
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses bans sources
+          arguments: --all-features
+
