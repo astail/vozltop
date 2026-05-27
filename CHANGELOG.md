@@ -33,6 +33,6 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 
 ### Security
 
-- （セキュリティ修正をここに追加）
+- `.github/workflows/audit.yml` で cargo-audit (RustSec advisory DB) を CI に追加。週次 + main push + Cargo.lock 変更時にスキャン (#8)
 
 [unreleased]: https://github.com/astail/vozltop/commits/main
