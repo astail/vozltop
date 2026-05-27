@@ -29,7 +29,7 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 
 ### Fixed
 
-- （バグ修正をここに追加）
+- MSRV (1.74) CI ジョブを `continue-on-error: true` に変更。推移依存 `idna_adapter v1.2.2` の `edition="2024"` 要件で恒常 fail していたため、auto-merge を解除しつつシグナルは可視化 (#79)
 
 ### Security
 
