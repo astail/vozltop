@@ -31,6 +31,28 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// リクエスト全体のタイムアウト (接続 + 送信 + 受信)。
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// 1 レスポンスとして受理する body の上限 (バイト)。
+///
+/// 10 MiB。脅威モデル (issue #41):
+///
+/// - ユーザが誤って vts 以外の巨大 endpoint (バックアップダンプ等) を指した
+/// - 内部サーバが侵害され、巨大レスポンスで `vozltop` を OOM させようとした
+///
+/// 観測値の参考: histogram bucket 付き serverZones + upstreamZones を多数持つ
+/// 構成でも実 JSON は数百 KB に収まる。10 MiB はその ×20〜×100 の安全側マージン。
+///
+/// `Content-Length` が宣言されていればそこで即拒否し、無い (chunked) 場合は
+/// ストリーム読み取り中に累積バイト数で打ち切る。
+pub const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
+
+/// `read_body_with_limit` の初期 capacity 上限 (1 MiB)。
+///
+/// `Content-Length` が攻撃者の意図で過大に詰められていた場合、それを
+/// `Vec::with_capacity` にそのまま渡すと事前確保で OOM し得る。
+/// プレチェックを抜けた値 (`MAX_RESPONSE_BYTES` 以下) でも、最初は 1 MiB
+/// 程度に抑えて、必要に応じて Vec が自動拡張する。
+const INITIAL_BODY_CAPACITY: usize = 1024 * 1024;
+
 /// 1 回 fetch するごとに 1 つの `VtsStatus` を返す HTTP クライアント。
 ///
 /// **セキュリティ運用ルール**: 本構造体には `#[derive(Debug)]` を絶対に追加
@@ -124,13 +146,60 @@ impl VtsClient {
             return Err(FetchError::Status { code: status });
         }
 
-        // TODO(issue #41): レスポンスサイズ上限を導入する。現状 `response.text()`
-        // は body 全体をメモリに読み込むため、悪意ある (or バグった) リバースプロキシ
-        // が GB 級 body を返すと OOM する。
-        let body = response.text().await?;
+        // issue #41: 巨大レスポンスによる OOM/DoS を防ぐ。
+        // (1) Content-Length を信用するプレチェック (1 byte も読まずに reject)
+        // (2) chunked encoding 等で Content-Length が無い場合は、stream を
+        //     `chunk()` で受けながら累積で打ち切る。
+        let body = read_body_with_limit(response, MAX_RESPONSE_BYTES).await?;
 
-        serde_json::from_str::<VtsStatus>(&body).map_err(FetchError::Decode)
+        serde_json::from_slice::<VtsStatus>(&body).map_err(FetchError::Decode)
     }
+}
+
+/// レスポンス body を `max_bytes` を上限としてメモリに読み込む。
+///
+/// - `Content-Length: N` が宣言され、`N > max_bytes` なら 1 byte も読まずに reject
+/// - そうでなければ `Response::chunk()` をループで読み、累積が `max_bytes` を超えた
+///   時点で reject (chunked encoding / 巨大ストリーム対策)
+///
+/// `Vec` の初期 capacity は (a) Content-Length が分かっていればそれ
+/// (b) 不明なら [`INITIAL_BODY_CAPACITY`] を上限として確保する。`Content-Length`
+/// が `max_bytes` 直前まで詰められていた場合に capacity だけで OOM するのを防ぐ。
+async fn read_body_with_limit(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+) -> std::result::Result<Vec<u8>, FetchError> {
+    // (1) Content-Length プレチェック
+    if let Some(advertised) = response.content_length() {
+        if advertised > max_bytes as u64 {
+            return Err(FetchError::ResponseTooLarge {
+                limit: max_bytes,
+                advertised: Some(advertised),
+            });
+        }
+    }
+
+    // (2) chunked stream を累積で打ち切る
+    let initial = response
+        .content_length()
+        .map(|n| (n as usize).min(INITIAL_BODY_CAPACITY))
+        .unwrap_or(8 * 1024);
+    let mut body: Vec<u8> = Vec::with_capacity(initial);
+
+    while let Some(chunk) = response.chunk().await? {
+        // 受け取った時点で上限超過なら body にコピーせず即拒否する。
+        // chunk 自体は既に reqwest が tokio buffer に積んでいるが、
+        // それを Vec に展開する前に止めれば追加 alloc を防げる。
+        if body.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(FetchError::ResponseTooLarge {
+                limit: max_bytes,
+                advertised: response.content_length(),
+            });
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    Ok(body)
 }
 
 /// fetch 1 回ぶんのエラー分類。
@@ -166,6 +235,15 @@ pub enum FetchError {
     /// 200 が返ったが body を `VtsStatus` にデコードできなかった。
     /// スキーマ不一致 (permanent) も nginx 半起動 (transient) もありうる。
     Decode(serde_json::Error),
+    /// レスポンス body が [`MAX_RESPONSE_BYTES`] を超えた (issue #41)。
+    ///
+    /// `advertised` は `Content-Length` で宣言された値 (信じられる場合のみ
+    /// `Some`)。chunked encoding 経由で実ストリームが上限を超えた場合は
+    /// `None` になる。
+    ResponseTooLarge {
+        limit: usize,
+        advertised: Option<u64>,
+    },
 }
 
 impl FetchError {
@@ -181,6 +259,12 @@ impl FetchError {
                 None => format!("HTTP {}", code.as_u16()),
             },
             FetchError::Decode(_) => "invalid VTS JSON".to_string(),
+            FetchError::ResponseTooLarge { limit, .. } => {
+                // 単位を MiB (1024×1024) で人間可読化。limit は静的に決まるので
+                // 端数を考えず割り算する (`MAX_RESPONSE_BYTES` は 10 MiB)。
+                let mib = limit / (1024 * 1024);
+                format!("response too large (limit {mib} MiB)")
+            }
         }
     }
 }
@@ -196,7 +280,9 @@ impl std::error::Error for FetchError {
         match self {
             FetchError::Connect(e) => Some(e),
             FetchError::Decode(e) => Some(e),
-            FetchError::Timeout | FetchError::Status { .. } => None,
+            FetchError::Timeout
+            | FetchError::Status { .. }
+            | FetchError::ResponseTooLarge { .. } => None,
         }
     }
 }
