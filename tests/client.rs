@@ -12,7 +12,7 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use url::Url;
 use vozltop::cli::Args;
-use vozltop::client::{FetchError, VtsClient};
+use vozltop::client::{FetchError, VtsClient, MAX_RESPONSE_BYTES};
 
 /// ワンショット HTTP サーバを立てて URL を返す。
 ///
@@ -22,6 +22,25 @@ use vozltop::client::{FetchError, VtsClient};
 async fn spawn_oneshot_server(response: Vec<u8>) -> Url {
     let (url, _rx) = spawn_oneshot_capturing(response).await;
     url
+}
+
+/// `spawn_oneshot_server` の寛容版: 書き込み失敗 (broken pipe 等) で
+/// panic させない。クライアントが本文途中で接続を切るケース (issue #41
+/// のストリーム打ち切り検証など) で使用する。
+async fn spawn_oneshot_server_tolerant(response: Vec<u8>) -> Url {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local_addr");
+    tokio::spawn(async move {
+        let (mut socket, _) = match listener.accept().await {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let mut buf = vec![0u8; 8192];
+        let _ = socket.read(&mut buf).await; // request を best-effort で読み捨てる
+        let _ = socket.write_all(&response).await; // client が途中で close しても無視
+        let _ = socket.shutdown().await;
+    });
+    format!("http://{addr}/status/format/json").parse().unwrap()
 }
 
 /// ワンショット HTTP サーバを立てて `(URL, 受信したリクエストの byte 列)` を返す。
@@ -311,3 +330,93 @@ async fn client_builds_with_insecure_flag() {
 // は issue #34 で clap の `value_parser` 側に検証を移したため削除した。
 // 同等のケースは `src/cli.rs` の `args_rejects_invalid_user_at_clap_layer` /
 // `args_rejects_invalid_header_at_clap_layer` で確認している。
+
+// ---- issue #41: response size limit --------------------------------------
+
+/// `Content-Length` プレチェック: 宣言値が上限超過の時点で body を 1 byte も
+/// 読まずに `ResponseTooLarge` を返す (チープテスト: body 自体は送らない)。
+#[tokio::test]
+async fn fetch_rejects_when_content_length_exceeds_limit() {
+    // 11 MiB 宣言 + 実体は数 byte。reqwest 側で Content-Length と body 長の
+    // ミスマッチを許容するため、サーバは headers と空 body を送ってから close。
+    let advertised = (MAX_RESPONSE_BYTES as u64) + 1024 * 1024; // 11 MiB
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {advertised}\r\nConnection: close\r\n\r\n"
+    );
+    let url = spawn_oneshot_server(response.into_bytes()).await;
+    let client = VtsClient::new(&args_for(url)).expect("client builds");
+
+    let err = match client.fetch().await {
+        Ok(_) => panic!("oversized Content-Length should be rejected"),
+        Err(e) => e,
+    };
+    match err {
+        FetchError::ResponseTooLarge {
+            limit,
+            advertised: got,
+        } => {
+            assert_eq!(
+                limit, MAX_RESPONSE_BYTES,
+                "limit should be MAX_RESPONSE_BYTES"
+            );
+            assert_eq!(
+                got,
+                Some(advertised),
+                "advertised len should match server header"
+            );
+        }
+        other => panic!("expected ResponseTooLarge, got {other:?}"),
+    }
+    // banner_message は URL/secret を含まず短い: "response too large (limit 10 MiB)"
+    let msg = err.banner_message();
+    assert!(
+        msg.contains("too large"),
+        "banner should mention 'too large': {msg}"
+    );
+    assert!(
+        msg.contains("10 MiB"),
+        "banner should mention limit in MiB: {msg}"
+    );
+}
+
+/// chunked (Content-Length 無し) で実 body が上限を超えるケース。
+/// ストリーム途中で打ち切る経路を踏むことを確認する。
+#[tokio::test]
+async fn fetch_rejects_chunked_body_exceeding_limit() {
+    // 1 MiB を 12 個続けるチャンクストリーム = 12 MiB > MAX_RESPONSE_BYTES。
+    // 各 chunk size 行は 16 進: 100000 = 1 MiB。
+    let chunk = vec![b'x'; 1024 * 1024];
+    let chunk_hex = format!("{:x}", chunk.len());
+
+    let mut response: Vec<u8> = Vec::with_capacity(13 * 1024 * 1024);
+    response.extend_from_slice(
+        b"HTTP/1.1 200 OK\r\n\
+          Content-Type: application/json\r\n\
+          Transfer-Encoding: chunked\r\n\
+          Connection: close\r\n\r\n",
+    );
+    for _ in 0..12 {
+        response.extend_from_slice(chunk_hex.as_bytes());
+        response.extend_from_slice(b"\r\n");
+        response.extend_from_slice(&chunk);
+        response.extend_from_slice(b"\r\n");
+    }
+    response.extend_from_slice(b"0\r\n\r\n"); // terminating empty chunk
+
+    // クライアントが ~10 MiB 受信時点で接続を drop するため、サーバ側の
+    // 残り chunk write は確実に EPIPE になる。寛容版で panic を抑える。
+    let url = spawn_oneshot_server_tolerant(response).await;
+    let client = VtsClient::new(&args_for(url)).expect("client builds");
+
+    let err = match client.fetch().await {
+        Ok(_) => panic!("oversized chunked body should be rejected"),
+        Err(e) => e,
+    };
+    // chunked encoding 中は reqwest が advertised Content-Length を None にする。
+    // 実装の `read_body_with_limit` 末尾で再度 `response.content_length()` を
+    // 読むが、chunked では None のままなので advertised は None になる。
+    assert!(
+        matches!(err, FetchError::ResponseTooLarge { limit, .. } if limit == MAX_RESPONSE_BYTES),
+        "expected ResponseTooLarge with limit=MAX_RESPONSE_BYTES, got {err:?}"
+    );
+}
