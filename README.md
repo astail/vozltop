@@ -64,6 +64,32 @@ vozltop https://nginx.example.com/status/format/json \
   --header 'Authorization: Bearer eyJ...'
 ```
 
+### Secrets を argv に露出しない
+
+共有マシン (jump-host / kubernetes pod など) では `ps` で他ユーザに argv が見えるため、`--user user:pass` や `--header 'Authorization: Bearer ...'` を直接渡すと password / token が漏れます。本ツールはこれを回避するために以下のフォールバックを提供します:
+
+| 用途 | 方法 |
+|------|------|
+| Basic 認証の password | `VOZLTOP_PASSWORD` 環境変数 (推奨) |
+| Basic 認証の password (script 経由) | `--user user:-` + stdin パイプ |
+| 任意ヘッダ全体 | `--header @path/to/file` (ファイル内に `K: V` 形式で 1 行記述) |
+
+```bash
+# 環境変数 (推奨)
+VOZLTOP_PASSWORD=secret vozltop https://nginx.example.com/status/format/json \
+  --user admin:placeholder
+
+# stdin (パスワードマネージャから流す)
+pass show vozltop | vozltop https://nginx.example.com/status/format/json --user admin:-
+
+# ファイル (mode 0600 推奨)
+echo 'Authorization: Bearer eyJ...' > ~/.vozltop-auth
+chmod 600 ~/.vozltop-auth
+vozltop https://nginx.example.com/status/format/json --header @~/.vozltop-auth
+```
+
+`VOZLTOP_PASSWORD` 環境変数を設定すると `--user user:argv_pass` の `argv_pass` は **常に上書き** されます (argv に書く値はダミーで OK)。argv に password / Bearer トークンが残っているのを検知すると起動時に stderr に警告を 1 度出します。
+
 ### TLS 検証
 
 既定では reqwest の **rustls-tls-native-roots** バックエンドで OS の信頼ストア (macOS Keychain / Linux のシステム CA 等) を読み込みます。社内 CA を OS に登録していれば追加設定なしで HTTPS が通ります。
