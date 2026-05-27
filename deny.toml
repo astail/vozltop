@@ -1,0 +1,78 @@
+# cargo-deny configuration (issue #9)
+#
+# 二段構えのチェック体制:
+# - audit.yml (cargo-audit): RustSec advisory DB を週次でチェック
+# - ci.yml    (cargo-deny):  ライセンス / 重複バージョン / unknown source を PR ごとに弾く
+#
+# advisories は audit-check と重複するためここでは扱わず、licenses/bans/sources のみ管理する。
+
+# 設定スキーマバージョン (cargo-deny 0.14+)
+[graph]
+# 配布ターゲット (CLAUDE.md: linux x86_64/arm64, macOS arm64)。
+# Windows は v1 ターゲット外だがコンパイル可能性確認のため含めない。
+targets = [
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "aarch64-unknown-linux-gnu" },
+    { triple = "aarch64-apple-darwin" },
+]
+all-features = true
+
+[output]
+feature-depth = 1
+
+# ---------------------------------------------------------------------------
+# licenses: 許可リストに無いライセンスを deny
+# ---------------------------------------------------------------------------
+# SPDX 識別子のみ受理。MIT / Apache-2.0 と互換性のあるものに限定。
+[licenses]
+version = 2
+confidence-threshold = 0.93
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "Zlib",
+]
+exceptions = []
+
+# ---------------------------------------------------------------------------
+# bans: 重複バージョンや特定 crate を制限
+# ---------------------------------------------------------------------------
+# multiple-versions は警告のみ (CI を落とさない)。transitive bloat の可視化が目的。
+# OpenSSL 系を明示的に拒否 (CLAUDE.md: rustls-tls-native-roots 固定)。
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = false
+highlight = "all"
+deny = [
+    { name = "openssl",     reason = "use rustls (see CLAUDE.md / SECURITY.md)" },
+    { name = "openssl-sys", reason = "use rustls (see CLAUDE.md / SECURITY.md)" },
+    { name = "native-tls",  reason = "use rustls (see CLAUDE.md / SECURITY.md)" },
+]
+skip = []
+skip-tree = []
+
+# ---------------------------------------------------------------------------
+# sources: 未知のレジストリ / git リモートを禁止
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+# ---------------------------------------------------------------------------
+# advisories: audit-check と重複させない (空に近い設定)
+# ---------------------------------------------------------------------------
+# cargo deny check は引数で個別チェックを指定して走らせる前提。
+# `cargo deny check licenses bans sources` を CI / ローカルで実行する。
+[advisories]
+version = 2
+ignore = []
