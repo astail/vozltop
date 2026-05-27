@@ -2,7 +2,6 @@
 name = "vozltop"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.74"
 description = "htop-like real-time TUI for nginx-module-vts"
 repository = "https://github.com/astail/vozltop"
 license = "MIT"
