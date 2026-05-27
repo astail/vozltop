@@ -1,33 +1,41 @@
 //! TUI 描画レイヤのエントリポイント。
 //!
-//! 本ファイルは issue #25 で「最低限の画面が出る」状態まで持っていくための
-//! stub `render` を提供する。実際の widget 構成 (header / table / footer /
-//! detail / help) は後続 issue で埋めていく:
+//! issue #25 で「最低限の画面が出る」状態の stub `render` を提供したあと、
+//! 各 widget は後続 issue で順に埋まる:
 //!
-//! - issue #27: ヘッダ (接続 Gauge + Sparkline)
+//! - **issue #27 (本ファイルの 3 行ヘッダ参照先)**: ヘッダ (接続 Gauge + Sparkline)
 //! - issue #28-#30: zone テーブル (Server / Upstream / Cache)
 //! - issue #31: ソート + フィルタの UI
 //! - issue #32: 詳細オーバーレイ
 //! - issue #33: footer + help
 //!
-//! 本 PR のレイアウト方針:
+//! ## レイアウト方針 (issue #27 以降)
 //!
 //! ```text
-//! ┌──────────────────────────────────────────────────────────┐
-//! │ vozltop 0.1.0 — http://host/status/format/json  [Connecting] │  <- header (1 行)
-//! ├──────────────────────────────────────────────────────────┤
-//! │ (本体は後続 issue で実装)                                  │
-//! │                                                           │
-//! │                                                           │
-//! ├──────────────────────────────────────────────────────────┤
-//! │ HTTP 500 Internal Server Error                            │  <- error banner (任意、1 行)
-//! ├──────────────────────────────────────────────────────────┤
-//! │ q/F10 Quit                                                │  <- footer (1 行)
-//! └──────────────────────────────────────────────────────────┘
+//! ┌──────────────────────────────────────────────────────────────────┐
+//! │ [Stale] consecutive failures: 2                                  │  <- status banner (Stale/Disconnected のみ)
+//! ├──────────────────────────────────────────────────────────────────┤
+//! │ Conn  [█████░░░] 42/120   active 42 reading 3 writing 5 …        │  <- header 行 1
+//! │ RPS   ▁▂▃▅▇▇▆▄   1234/s   | 5xx 0.20%                            │  <- header 行 2
+//! │ in    ▁▂▃▅▇▆▄   1.2 MB/s   out  ▁▂▃▅▇▆▄   4.5 MB/s               │  <- header 行 3
+//! ├──────────────────────────────────────────────────────────────────┤
+//! │ (本体は後続 issue で実装)                                          │
+//! │                                                                   │
+//! │                                                                   │
+//! ├──────────────────────────────────────────────────────────────────┤
+//! │ HTTP 500 Internal Server Error                                    │  <- error banner (任意、1 行)
+//! ├──────────────────────────────────────────────────────────────────┤
+//! │ q/F10 Quit                                                        │  <- footer (1 行)
+//! └──────────────────────────────────────────────────────────────────┘
 //! ```
 //!
-//! header / footer / banner のテキストは本 PR で確定させ、後続 issue では
-//! ボディの中身 (Table / Sparkline 等) を埋めていく。
+//! ## 高さ要件
+//!
+//! 受け入れ条件「80x24 で崩れない」を満たすため、`Layout::vertical` の
+//! `Fill(1)` を本体に置き、極端な resize で本体が 0 行になっても破綻しない
+//! 構成にしている。
+
+pub mod header;
 
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
@@ -35,70 +43,50 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::state::{App, AppStatus};
+use crate::state::App;
 
 /// app の状態に応じて画面全体を再描画する。
 ///
-/// 引数:
-///
-/// - `f`: ratatui の `Frame`。今フレームの描画先。
-/// - `app`: アプリ状態 (read-only)。`status` と `error_banner` から
-///   header / banner のテキストを生成する。
-///
-/// 副作用は `f` への widget render 呼び出しのみ。
-/// I/O を伴わないので `TestBackend` ベースの単体テストで挙動を固定できる。
+/// 副作用は `f` への widget render 呼び出しのみ。I/O を伴わないので
+/// `TestBackend` ベースの単体テストで挙動を固定できる。
 pub fn render(f: &mut Frame<'_>, app: &App) {
-    // banner の有無で「中段」高さが 1 行ぶん変わるため、レイアウトを分岐する。
-    // Length(1) を 3 つ並べると、リサイズで「本体が 0 行」になっても破綻しない
-    // ように Fill(1) を本体に置く構成。
-    let banner = app.error_banner_display();
+    let banner_msg = app.error_banner_display();
+    let show_status_banner = header::show_status_banner(app);
+
+    // 上から: status banner? → header(3) → body(fill) → error_banner? → footer(1)
+    let mut constraints: Vec<Constraint> = Vec::with_capacity(5);
+    if show_status_banner {
+        constraints.push(Constraint::Length(1));
+    }
+    constraints.push(Constraint::Length(header::HEADER_HEIGHT));
+    constraints.push(Constraint::Fill(1));
+    if banner_msg.is_some() {
+        constraints.push(Constraint::Length(1));
+    }
+    constraints.push(Constraint::Length(1)); // footer
 
     let area = f.area();
-    if let Some(msg) = banner.as_deref() {
-        let [header_area, body_area, banner_area, footer_area] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Fill(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .areas(area);
-        f.render_widget(header_widget(app), header_area);
-        f.render_widget(body_placeholder(), body_area);
-        f.render_widget(banner_widget(msg, app), banner_area);
-        f.render_widget(footer_widget(), footer_area);
-    } else {
-        let [header_area, body_area, footer_area] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Fill(1),
-            Constraint::Length(1),
-        ])
-        .areas(area);
-        f.render_widget(header_widget(app), header_area);
-        f.render_widget(body_placeholder(), body_area);
-        f.render_widget(footer_widget(), footer_area);
-    }
-}
+    let rows = Layout::vertical(constraints).split(area);
 
-fn header_widget(app: &App) -> Paragraph<'static> {
-    let status_label = match &app.status {
-        AppStatus::Connecting => "Connecting",
-        AppStatus::Running => "Running",
-        AppStatus::Stale { .. } => "Stale",
-        AppStatus::Disconnected { .. } => "Disconnected",
-    };
-    let title = concat!(env!("CARGO_PKG_NAME"), " ", env!("CARGO_PKG_VERSION"));
-    let line = Line::from(vec![
-        Span::styled(title, Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw("  ["),
-        Span::raw(status_label),
-        Span::raw("]"),
-    ]);
-    Paragraph::new(line)
+    let mut idx = 0usize;
+    if show_status_banner {
+        header::render_status_banner(f, app, rows[idx]);
+        idx += 1;
+    }
+    header::render(f, app, rows[idx]);
+    idx += 1;
+    f.render_widget(body_placeholder(), rows[idx]);
+    idx += 1;
+    if let Some(msg) = banner_msg.as_deref() {
+        f.render_widget(banner_widget(msg, app), rows[idx]);
+        idx += 1;
+    }
+    f.render_widget(footer_widget(), rows[idx]);
 }
 
 fn body_placeholder() -> Paragraph<'static> {
-    // 後続 issue (#27-#30) で widget が埋まるまでの暫定表示。テキストは固定で、
-    // 「画面が出ている」ことを確認するための最低限のヒント。
+    // 後続 issue (#28-#30) で widget が埋まるまでの暫定表示。「画面が出ている」
+    // ことを確認するための最低限のヒント。
     Paragraph::new(Line::from(Span::styled(
         "waiting for first VTS snapshot…",
         Style::default().add_modifier(Modifier::DIM),
@@ -106,13 +94,12 @@ fn body_placeholder() -> Paragraph<'static> {
 }
 
 fn banner_widget<'a>(msg: &'a str, app: &App) -> Paragraph<'a> {
+    // `App::error_banner_display` 側で mono 時に "[!] " prefix を付与済み。
+    // ここではスタイルだけ載せる。
     let style = if app.theme.mono {
         Style::default().add_modifier(Modifier::BOLD)
     } else {
-        // 色付き時のスタイルは #26 で Theme に集約されているが、ここでは
-        // 「error っぽく見える」最低限の差別化として bold + 既定色を使う。
-        // 色そのものは Theme 拡張時に集約する (issue #27 以降)。
-        Style::default().add_modifier(Modifier::BOLD)
+        app.theme.error_banner
     };
     Paragraph::new(Line::from(Span::styled(msg.to_string(), style)))
 }
@@ -132,7 +119,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
-    use crate::state::App;
+    use crate::state::{App, AppStatus};
     use crate::theme::Theme;
 
     fn draw_to_string(app: &App, width: u16, height: u16) -> String {
@@ -151,64 +138,99 @@ mod tests {
     }
 
     #[test]
-    fn header_shows_app_name_version_and_connecting_state() {
+    fn renders_3_row_header_with_conn_rps_bw_labels() {
         let app = App::new();
         let out = draw_to_string(&app, 80, 6);
-        // CARGO_PKG_NAME と VERSION の両方を含むこと
-        assert!(out.contains(env!("CARGO_PKG_NAME")), "out:\n{out}");
-        assert!(out.contains(env!("CARGO_PKG_VERSION")), "out:\n{out}");
-        // 初期状態は Connecting
-        assert!(out.contains("Connecting"), "out:\n{out}");
-        // body プレースホルダ
+        // 行 1: Conn ラベル
+        assert!(out.contains("Conn"), "out:\n{out}");
+        // 行 2: RPS ラベル
+        assert!(out.contains("RPS"), "out:\n{out}");
+        // 行 3: BW 系 (in, out ラベル) + 0 B/s プレースホルダ
+        assert!(out.contains("in"), "out:\n{out}");
+        assert!(out.contains("out"), "out:\n{out}");
+        assert!(out.contains("0 B/s"), "out:\n{out}");
+        // body プレースホルダ + footer
         assert!(
             out.contains("waiting for first VTS snapshot"),
             "out:\n{out}"
         );
-        // footer
         assert!(out.contains("Quit"), "out:\n{out}");
     }
 
     #[test]
-    fn header_status_label_reflects_running_state() {
+    fn stale_status_inserts_pre_header_banner() {
+        let mut app = App::new();
+        app.status = AppStatus::Stale {
+            last_ok: std::time::Instant::now(),
+            failures: 2,
+        };
+        let out = draw_to_string(&app, 80, 8);
+        // status banner にラベルが出る
+        assert!(out.contains("Stale"), "out:\n{out}");
+        assert!(out.contains("failures: 2"), "out:\n{out}");
+        // ヘッダの 3 行も併存している
+        assert!(out.contains("Conn"), "out:\n{out}");
+        assert!(out.contains("RPS"), "out:\n{out}");
+    }
+
+    #[test]
+    fn disconnected_status_inserts_pre_header_banner() {
+        let mut app = App::new();
+        app.status = AppStatus::Disconnected { failures: 5 };
+        let out = draw_to_string(&app, 80, 8);
+        assert!(out.contains("Disconnected"), "out:\n{out}");
+        assert!(out.contains("failures: 5"), "out:\n{out}");
+    }
+
+    #[test]
+    fn running_state_does_not_show_status_banner() {
         let mut app = App::new();
         app.status = AppStatus::Running;
-        let out = draw_to_string(&app, 60, 4);
-        assert!(out.contains("Running"), "out:\n{out}");
-        // 切り替え後は Connecting ラベルが消えていること
-        assert!(!out.contains("Connecting"), "out:\n{out}");
+        let out = draw_to_string(&app, 80, 7);
+        // banner 部分の文字列は出てこない
+        assert!(!out.contains("[Stale]"), "out:\n{out}");
+        assert!(!out.contains("[Disconnected]"), "out:\n{out}");
+        // ヘッダはそのまま表示
+        assert!(out.contains("Conn"), "out:\n{out}");
     }
 
     #[test]
     fn error_banner_is_rendered_when_present() {
         let mut app = App::new();
         app.error_banner = Some("HTTP 500 Internal Server Error".to_string());
-        let out = draw_to_string(&app, 80, 6);
+        let out = draw_to_string(&app, 80, 8);
         assert!(out.contains("HTTP 500"), "out:\n{out}");
     }
 
     #[test]
     fn error_banner_has_bang_prefix_in_mono_theme() {
-        // theme = mono のとき、banner は "[!] " が前置される (state::App の責務)
         let mut app = App::with_theme(Theme::mono());
         app.error_banner = Some("HTTP 500 Internal Server Error".to_string());
-        let out = draw_to_string(&app, 80, 6);
+        let out = draw_to_string(&app, 80, 8);
         assert!(out.contains("[!] HTTP 500"), "out:\n{out}");
     }
 
     #[test]
     fn renders_without_banner_when_no_error() {
         let app = App::new();
-        let out = draw_to_string(&app, 80, 5);
-        // 各種ラベルが出ていれば OK (banner 行を持たない 3 段レイアウト)
-        assert!(out.contains("Connecting"), "out:\n{out}");
+        let out = draw_to_string(&app, 80, 6);
+        // 通常時はヘッダの 3 行 + body + footer
+        assert!(out.contains("Conn"), "out:\n{out}");
         assert!(out.contains("Quit"), "out:\n{out}");
     }
 
     #[test]
     fn tiny_terminal_does_not_panic() {
-        // リサイズで極端に小さくしても panic しない (Layout が高さを切り詰める)
+        // header 3 行 + footer 1 行 = 4 行未満でも panic しない (layout が
+        // 下から切り捨てる)
         let app = App::new();
-        // header(1) + body(>=0) + footer(1) = 最小 2 行
         let _ = draw_to_string(&app, 20, 2);
+    }
+
+    #[test]
+    fn fits_in_80x24_layout() {
+        // 受け入れ条件: 80x24 で崩れない
+        let app = App::new();
+        let _ = draw_to_string(&app, 80, 24);
     }
 }
