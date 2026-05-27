@@ -35,4 +35,4 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 
 - （セキュリティ修正をここに追加）
 
-[unreleased]: https://github.com/astail/vozltop/compare/HEAD...HEAD
+[unreleased]: https://github.com/astail/vozltop/commits/main
