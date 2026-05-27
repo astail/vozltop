@@ -49,7 +49,7 @@ crossterm events (key, resize, ctrl-c)
 - `crossterm` 0.29+ (`event-stream`) — ターミナルバックエンド + 非同期 `EventStream`
 - `tokio` (`rt`, `macros`, `time`, `signal`) — 非同期ランタイム（シングルスレッド）
 - `futures-util` — `EventStream` への `StreamExt::next()` 適用（`tokio-stream` ではなく `futures` 側を使う）
-- `reqwest` (`rustls-tls`, `json`) — HTTP（OpenSSL 不使用でクロスコンパイル容易）。`--insecure` 用に `danger_accept_invalid_certs` を利用
+- `reqwest` (`rustls-tls-native-roots`, `json`, `gzip`) — HTTP（OpenSSL 不使用でクロスコンパイル容易）。**既定で OS の信頼ストアを使用** (社内 CA 等の追加設定不要)。`--insecure` 用に `danger_accept_invalid_certs` を利用 (詳細は issue #39 / SECURITY.md)
 - `serde` + `serde_json` — vts JSON デシリアライズ
 - `clap` v4 (`derive`) — CLI パース
 - `color-eyre` — エラーレポート
