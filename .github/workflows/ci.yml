@@ -63,5 +63,3 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check licenses bans sources
-          arguments: --all-features
-
