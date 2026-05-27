@@ -6,7 +6,7 @@
 
 **vozltop** は [vozlt/nginx-module-vts](https://github.com/vozlt/nginx-module-vts) が公開する nginx トラフィック統計 JSON を、`htop` のようなインタラクティブ TUI でリアルタイム可視化する CLI ツールです。
 
-- 言語: **Rust**（stable、MSRV 1.74）
+- 言語: **Rust**（stable のみ。MSRV 宣言は持たない — issue #79 参照）
 - 配布: 単一バイナリ（`cargo install vozltop` / GitHub Releases）
 - ターゲット: linux x86_64/arm64, macOS arm64
 - ライセンス: 未確定（v1 リリース前に MIT を予定）
@@ -138,7 +138,7 @@ cargo run -- http://localhost:8080/status/format/json --interval 0.5
 ## 実装順序（v1）
 
 1. ドキュメント整備（このファイル / DESIGN.md / ROADMAP.md / README.md）
-2. `Cargo.toml` + `.gitignore` + 空 `src/main.rs` で `cargo build` 通す（`rust-version = "1.74"` 明記）
+2. `Cargo.toml` + `.gitignore` + 空 `src/main.rs` で `cargo build` 通す
 3. **Docker で xcgd/nginx-vts を立て、実 response を取得して `tests/fixtures/` に保存**
    - histogram あり (`vhost_traffic_status_histogram_buckets` 設定) と なし の両パターン
    - 手書きせず、`curl http://localhost:8080/status/format/json` の生 JSON を commit する

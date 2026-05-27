@@ -96,24 +96,17 @@ PR の最後に以下を貼る（テンプレ）:
 
 ---
 
-## MSRV 引き上げを伴う major bump
+## MSRV について
 
-依存が `rust-version` を引き上げてきた場合は **必ず別 issue に分割**する:
+本プロジェクトは **stable toolchain のみ** をサポートし、`Cargo.toml` に `rust-version` フィールドを持ちません (issue #79)。したがって依存が `rust-version` を引き上げてきたケースの特別扱いは不要です — `cargo update` が stable で通れば追従可能です。
 
-- 本リポジトリの MSRV は `Cargo.toml` の `rust-version = "1.74"` で固定
-- CI の MSRV ジョブ（issue #7）が走るので失敗時に検知できる
-- MSRV を上げる判断は、依存追従の判断とは別軸（ユーザ環境への影響が大きい）
-
-MSRV bump を含む PR は本ポリシーの「major 手順」に **加えて** 以下を行う:
-
-1. README / CLAUDE.md の MSRV 記載を更新
-2. 上げる動機（セキュリティ修正、エコシステムの収束、等）を PR 本文に明記
-3. リリースノート (`CHANGELOG.md` の `Changed` セクション) に **必ず** 1 行追加
+MSRV 宣言・CI 検証の再導入が必要になった場合は、新たに issue を立てて議論してください。
 
 ---
 
 ## 関連 issue / PR
 
-- #7 MSRV (Rust 1.74) チェックを CI に追加
+- #7 MSRV (Rust 1.74) チェックを CI に追加 (#79 で drop 済)
+- #79 MSRV (1.74) CI を drop した経緯
 - #3 CONTRIBUTING.md（本ドキュメントをリンクする予定）
 - #14 ratatui 0.30 系への追従可否を確認 (v1 実装前)

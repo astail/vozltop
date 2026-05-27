@@ -1,10 +1,12 @@
 # ratatui 0.30 採用評価 (2026-05)
 
-issue [#14](https://github.com/astail/vozltop/issues/14) の調査結果と判断を記録する。後で MSRV を引き上げる際に再評価しやすくするためのメモ。
+issue [#14](https://github.com/astail/vozltop/issues/14) の調査結果と判断を記録する。後で 0.30 へ引き上げる際に再評価しやすくするためのメモ。
+
+> **2026-05-27 補足**: 本評価当時に存在した「MSRV 1.74 vs 0.30 要求 MSRV 1.86 の衝突」という制約は、issue [#79](https://github.com/astail/vozltop/issues/79) で MSRV 宣言・CI ジョブを drop したため**失効**しています。とはいえ 0.29 維持の判断は他の観点（移行コスト / dependabot 自動追従 / v1 期間の churn 回避）でも支持されるため、結論は据え置きです。再評価時はこの補足を踏まえて MSRV 行は無視してください。
 
 ## TL;DR
 
-**vozltop v1 期間中は ratatui 0.29 系を採用する。0.30 への追従は MSRV を 1.86+ に引き上げる別 PR と同時に行う。**
+**vozltop v1 期間中は ratatui 0.29 系を採用する。0.30 への追従は別 PR + 再評価で行う。**
 
 ## 評価対象
 

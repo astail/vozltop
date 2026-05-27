@@ -10,14 +10,13 @@ vozltop へのコントリビューション、ありがとうございます！
 
 | ツール | 推奨バージョン | 用途 |
 |--------|---------------|------|
-| Rust toolchain | stable (MSRV **1.74**) | コンパイル / `cargo test` |
+| Rust toolchain | stable | コンパイル / `cargo test` |
 | Git | 2.30+ | `git worktree` を使うため |
 | Docker | 任意の最新 | nginx-vts fixture 取得 / E2E 動作確認 |
 
 ```bash
-# Rust toolchain (stable + MSRV 確認)
+# Rust toolchain
 rustup install stable
-rustup install 1.74        # MSRV ビルド検証用
 
 # 依存とビルド
 git clone https://github.com/astail/vozltop
@@ -111,30 +110,11 @@ footer に `closes #N` / `fixes #N` / `resolves #N` を書いておくと、merg
 
 CI は `cargo test` / `cargo clippy -D warnings` / `cargo fmt --check` を ubuntu / macos の両 OS で実行します。Windows 対応は v1 スコープ外です。
 
-加えて **MSRV ジョブ** (`msrv (1.74)`) が ubuntu-latest 上で `cargo build --locked` + `cargo test --locked` を Rust 1.74 toolchain で実行し、`Cargo.toml` の `rust-version` と一致するか検証します。詳細は次節。
+### Rust toolchain ポリシー
 
-### MSRV 引き上げのルール
+本プロジェクトは **stable toolchain のみ** をサポートします。MSRV (Minimum Supported Rust Version) は宣言しません — 推移依存が `edition = "2024"` を要求する等の理由で旧 toolchain での再現性を保証できないためです (詳細は issue #79)。
 
-`Cargo.toml` の `rust-version = "1.74"` および CI の MSRV ジョブは v1 期間中の互換性保証ラインです。**引き上げは独立した PR で扱い、勝手に行わない**でください。
-
-引き上げが必要になる主な契機:
-
-- Dependabot が引いた依存が新しい toolchain を要求する
-- `Cargo.toml` で新言語機能 (let-else, `async fn` in trait 等) を使いたい
-- 古い toolchain での CI 実行コストが過大になった
-
-手順:
-
-1. **issue #7 (本ジョブを追加した issue) にコメント** して動機・影響範囲・最小到達バージョンを書く
-2. 合意が取れたら **MSRV 引き上げ専用 PR** を作成
-   - `Cargo.toml` の `rust-version` 更新
-   - `.github/workflows/ci.yml` の `RUSTUP_TOOLCHAIN` 更新
-   - `rust-toolchain.toml` は `stable` のまま (チャンネル指定なので影響なし)
-   - `CONTRIBUTING.md` の MSRV 記載 (本セクション含む) を更新
-3. PR 本文に「なぜ引き上げが必要か」を明記
-4. **他の変更を相乗りさせない** (混在すると影響範囲の判断が困難)
-
-機能 PR の中で MSRV を暗黙に上げる commit は **レビューで diff を分離してもらう**運用としてください。
+stable 以外の toolchain でビルドできないことが致命的になるユースケースが出てきたら、改めて MSRV 宣言・CI 検証の再導入を検討します。
 
 ## 6. issue / PR テンプレート
 
