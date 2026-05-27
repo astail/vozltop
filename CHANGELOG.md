@@ -13,7 +13,7 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 
 ### Added
 
-- （新機能をここに追加）
+- 依存ライブラリの major bump 追従手順を `docs/DEPENDENCY_POLICY.md` に明文化 (#13)
 
 ### Changed
 
