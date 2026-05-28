@@ -59,7 +59,7 @@ use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState};
 use ratatui::Frame;
 
 use crate::model::{Responses, ServerZone, UpstreamServer, VtsStatus};
-use crate::state::{percentile, AlertConfig, App, PercentileResult, Tab};
+use crate::state::{percentile, AlertConfig, App, PercentileResult, SortColumn, SortState, Tab};
 use crate::ui::header::format_bps;
 
 /// 8 列ヘッダ。`ui::table::tests::*` から覗くことを想定して pub const にしてある。
@@ -105,11 +105,8 @@ impl UpstreamState {
 
     /// STATE ソート時の優先順 (小さいほど先頭)。
     ///
-    /// issue #29: `up` 先頭 → `backup` → `down` (ヘルス把握優先)。実際に
-    /// STATE 列ソートを発火させるのは issue #31 (`App::sort` 経由の動的ソート)
-    /// なので、本 PR では順序規約をテストで固定するだけ。#31 で使われ次第
-    /// `allow(dead_code)` は外す。
-    #[allow(dead_code)]
+    /// issue #29: `up` 先頭 → `backup` → `down` (ヘルス把握優先)。issue #31 で
+    /// `App::sort` 経由の STATE 列ソート (`sort_upstream_rows`) から利用する。
     fn sort_rank(&self) -> u8 {
         match self {
             UpstreamState::Up => 0,
@@ -274,6 +271,126 @@ pub(crate) fn sort_upstream_rows_default(rows: &mut [UpstreamRow]) {
             .unwrap_or(Ordering::Equal)
             .then_with(|| a.zone.cmp(&b.zone))
     });
+}
+
+// ---------- 動的ソート / フィルタ (issue #31) ----------
+//
+// `App::sort` (`SortState`) と `App::filter` を反映する。render と
+// `selected_zone` が同じ並び順を共有できるよう、本ファイルに集約する。
+//
+// ソート規約:
+// - 数値列 (RPS / ratios / BW): `descending` で大小を反転。tie は ZONE 名昇順で
+//   安定化 (HashMap 由来の非決定的順序を吸収)。
+// - p95 列: histogram 群 → Average 群 → NoData 群の tier 分離が必須なので
+//   `percentile::compare_for_sort` を使う。`descending` は **tier 内の数値だけ**
+//   反転させ、tier 自体の並び (Value 群が上 / NoData が下) は固定する。
+// - ZONE / STATE 列: 文字列 / state rank で比較。
+//
+// `Option<f64>` 列 (ratios) は `None` (= データ無し) を常に末尾へ送る
+// (`descending` でも先頭に来ないよう tier 扱い)。
+
+/// `f64` の昇順比較。`descending` で反転する。tie は呼び出し側で ZONE 名により
+/// 安定化する。
+fn cmp_f64(a: f64, b: f64, descending: bool) -> Ordering {
+    let ord = a.partial_cmp(&b).unwrap_or(Ordering::Equal);
+    if descending {
+        ord.reverse()
+    } else {
+        ord
+    }
+}
+
+/// `Option<f64>` 列の比較。`None` は方向に関わらず常に末尾。
+fn cmp_opt_f64(a: Option<f64>, b: Option<f64>, descending: bool) -> Ordering {
+    match (a, b) {
+        (Some(x), Some(y)) => cmp_f64(x, y, descending),
+        (Some(_), None) => Ordering::Less, // 値あり < データ無し
+        (None, Some(_)) => Ordering::Greater, // データ無しは末尾
+        (None, None) => Ordering::Equal,
+    }
+}
+
+/// p95 列の比較。tier (Value 群 → Average 群 → NoData 群) は固定で、`descending`
+/// は同 tier 内の数値順だけを反転する。
+fn cmp_p95(a: &PercentileResult, b: &PercentileResult, descending: bool) -> Ordering {
+    let asc = percentile::compare_for_sort(a, b);
+    if !descending {
+        return asc;
+    }
+    // 降順: tier はそのまま、同 tier 内のみ反転する。
+    a.sort_tier().cmp(&b.sort_tier()).then_with(|| {
+        // 同 tier なので compare_for_sort の戻り値 = 数値順。これを反転。
+        percentile::compare_for_sort(a, b).reverse()
+    })
+}
+
+/// Server 行を `SortState` に従って in-place ソートする。tie は ZONE 名昇順。
+pub(crate) fn sort_server_rows(rows: &mut [ServerRow], sort: SortState) {
+    let col = SortColumn::server_at(sort.column);
+    let desc = sort.descending;
+    rows.sort_by(|a, b| {
+        let primary = match col {
+            SortColumn::Zone => cmp_str(&a.zone, &b.zone, desc),
+            SortColumn::Rps => cmp_f64(a.rps, b.rps, desc),
+            SortColumn::R2xx => cmp_opt_f64(a.r2xx_pct, b.r2xx_pct, desc),
+            SortColumn::R4xx => cmp_opt_f64(a.r4xx_pct, b.r4xx_pct, desc),
+            SortColumn::R5xx => cmp_opt_f64(a.r5xx_pct, b.r5xx_pct, desc),
+            SortColumn::P95 => cmp_p95(&a.p95, &b.p95, desc),
+            SortColumn::InPerSec => cmp_f64(a.bw_in_per_sec, b.bw_in_per_sec, desc),
+            SortColumn::OutPerSec => cmp_f64(a.bw_out_per_sec, b.bw_out_per_sec, desc),
+            // Server タブに無い列 (STATE / Cache 系): RPS 降順にフォールバック。
+            _ => cmp_f64(a.rps, b.rps, true),
+        };
+        primary.then_with(|| a.zone.cmp(&b.zone))
+    });
+}
+
+/// Upstream 行を `SortState` に従って in-place ソートする。tie は ZONE 名昇順。
+pub(crate) fn sort_upstream_rows(rows: &mut [UpstreamRow], sort: SortState) {
+    let col = SortColumn::upstream_at(sort.column);
+    let desc = sort.descending;
+    rows.sort_by(|a, b| {
+        let primary = match col {
+            SortColumn::Zone => cmp_str(&a.zone, &b.zone, desc),
+            SortColumn::Rps => cmp_f64(a.rps, b.rps, desc),
+            SortColumn::R2xx => cmp_opt_f64(a.r2xx_pct, b.r2xx_pct, desc),
+            SortColumn::R4xx => cmp_opt_f64(a.r4xx_pct, b.r4xx_pct, desc),
+            SortColumn::R5xx => cmp_opt_f64(a.r5xx_pct, b.r5xx_pct, desc),
+            SortColumn::P95 => cmp_p95(&a.p95, &b.p95, desc),
+            SortColumn::InPerSec => cmp_f64(a.bw_in_per_sec, b.bw_in_per_sec, desc),
+            SortColumn::OutPerSec => cmp_f64(a.bw_out_per_sec, b.bw_out_per_sec, desc),
+            SortColumn::State => {
+                let ord = a.state.sort_rank().cmp(&b.state.sort_rank());
+                if desc {
+                    ord.reverse()
+                } else {
+                    ord
+                }
+            }
+            // Upstream タブに無い列 (Cache 系): RPS 降順にフォールバック。
+            _ => cmp_f64(a.rps, b.rps, true),
+        };
+        primary.then_with(|| a.zone.cmp(&b.zone))
+    });
+}
+
+/// 文字列の昇順比較。`descending` で反転する。
+fn cmp_str(a: &str, b: &str, descending: bool) -> Ordering {
+    let ord = a.cmp(b);
+    if descending {
+        ord.reverse()
+    } else {
+        ord
+    }
+}
+
+/// zone 名 substring フィルタ (大文字小文字無視)。`filter` が空なら何もしない。
+fn retain_matching<F>(rows: &mut Vec<F>, filter: &str, zone_of: impl Fn(&F) -> &str) {
+    if filter.is_empty() {
+        return;
+    }
+    let needle = filter.to_lowercase();
+    rows.retain(|r| zone_of(r).to_lowercase().contains(&needle));
 }
 
 fn compute_ratios_upstream(
@@ -554,25 +671,34 @@ pub(crate) fn format_used(used: u64, max: u64) -> String {
 
 /// 現在の `active_tab` + `cursor` が指す zone 名を返す (Enter で詳細を開くため)。
 ///
-/// Server タブは RPS 降順ソート後の行から `cursor` 位置を引く (render と同じ順)。
-/// snapshot 未取得 / 行 0 件 / 未実装タブ (Upstream / Cache は #29 / #30) は
-/// `None`。後続タブが実装されたら本関数に行解決を足す。
+/// render と同じ「build → filter → sort」を再現した行から `cursor` 位置を引く。
+/// snapshot 未取得 / 行 0 件 / 未実装タブ (Cache は #30) は `None`。
 pub fn selected_zone(app: &App) -> Option<String> {
-    if app.active_tab != Tab::Server {
-        return None;
-    }
     let now = app.history.latest()?;
     let prev = app.history.previous();
     let dt_secs = match prev {
         Some(p) => (now.status.now_msec.saturating_sub(p.status.now_msec) as f64) / 1000.0,
         None => 0.0,
     };
-    let rows = build_server_rows(&now.status, prev.map(|p| &p.status), dt_secs);
-    if rows.is_empty() {
-        return None;
+    let prev_status = prev.map(|p| &p.status);
+    match app.active_tab {
+        Tab::Server => {
+            let mut rows = build_server_rows(&now.status, prev_status, dt_secs);
+            retain_matching(&mut rows, &app.filter, |r| r.zone.as_str());
+            sort_server_rows(&mut rows, app.sort);
+            let idx = app.cursor.min(rows.len().checked_sub(1)?);
+            Some(rows[idx].zone.clone())
+        }
+        Tab::Upstream => {
+            let mut rows = build_upstream_rows(&now.status, prev_status, dt_secs);
+            retain_matching(&mut rows, &app.filter, |r| r.zone.as_str());
+            sort_upstream_rows(&mut rows, app.sort);
+            let idx = app.cursor.min(rows.len().checked_sub(1)?);
+            Some(rows[idx].zone.clone())
+        }
+        // Cache タブは issue #30 待ち。
+        Tab::Cache => None,
     }
-    let idx = app.cursor.min(rows.len() - 1);
-    Some(rows[idx].zone.clone())
 }
 
 // ---------- アラート判定 (issue #47) ----------
@@ -679,7 +805,9 @@ fn render_server(f: &mut Frame<'_>, app: &App, area: Rect) {
         }
         None => 0.0,
     };
-    let rows = build_server_rows(&now.status, prev.map(|p| &p.status), dt_secs);
+    let mut rows = build_server_rows(&now.status, prev.map(|p| &p.status), dt_secs);
+    retain_matching(&mut rows, &app.filter, |r| r.zone.as_str());
+    sort_server_rows(&mut rows, app.sort);
 
     let header =
         Row::new(SERVER_HEADERS.iter().map(|h| Cell::from(*h))).style(app.theme.table_header);
@@ -772,7 +900,9 @@ fn render_upstream(f: &mut Frame<'_>, app: &App, area: Rect) {
         }
         None => 0.0,
     };
-    let rows = build_upstream_rows(&now.status, prev.map(|p| &p.status), dt_secs);
+    let mut rows = build_upstream_rows(&now.status, prev.map(|p| &p.status), dt_secs);
+    retain_matching(&mut rows, &app.filter, |r| r.zone.as_str());
+    sort_upstream_rows(&mut rows, app.sort);
 
     let header =
         Row::new(UPSTREAM_HEADERS.iter().map(|h| Cell::from(*h))).style(app.theme.table_header);
@@ -1154,6 +1284,288 @@ mod tests {
             }
             other => panic!("expected Value, got {other:?}"),
         }
+    }
+
+    // ---------- 動的ソート / フィルタ (issue #31) ----------
+
+    use crate::state::{SortColumn, SortState};
+
+    /// 列 index を渡して sort し、ZONE 名の順を返すヘルパ。
+    fn sorted_server_zones(rows: &[ServerRow], column: u8, descending: bool) -> Vec<String> {
+        let mut v = rows.to_vec();
+        sort_server_rows(&mut v, SortState { column, descending });
+        v.iter().map(|r| r.zone.clone()).collect()
+    }
+
+    fn three_zone_status() -> (VtsStatus, VtsStatus) {
+        // rps: alpha=10, beta=100, gamma=50。in/s: alpha=300, beta=100, gamma=200。
+        let prev = status_with_zones(
+            1000,
+            &[
+                ("alpha", 0, 0, 0, 0, (0, 0, 0, 0, 0), None),
+                ("beta", 0, 0, 0, 0, (0, 0, 0, 0, 0), None),
+                ("gamma", 0, 0, 0, 0, (0, 0, 0, 0, 0), None),
+            ],
+        );
+        let now = status_with_zones(
+            2000,
+            &[
+                ("alpha", 10, 300, 0, 0, (0, 10, 0, 0, 0), None),
+                ("beta", 100, 100, 0, 0, (0, 100, 0, 0, 0), None),
+                ("gamma", 50, 200, 0, 0, (0, 50, 0, 0, 0), None),
+            ],
+        );
+        (prev, now)
+    }
+
+    #[test]
+    fn sort_server_by_rps_desc_and_asc() {
+        let (prev, now) = three_zone_status();
+        let rows = build_server_rows(&now, Some(&prev), 1.0);
+        // col 1 = RPS。降順: beta(100) > gamma(50) > alpha(10)。
+        assert_eq!(
+            sorted_server_zones(&rows, 1, true),
+            vec!["beta", "gamma", "alpha"]
+        );
+        // 昇順: alpha(10) < gamma(50) < beta(100)。
+        assert_eq!(
+            sorted_server_zones(&rows, 1, false),
+            vec!["alpha", "gamma", "beta"]
+        );
+    }
+
+    #[test]
+    fn sort_server_by_zone_name() {
+        let (prev, now) = three_zone_status();
+        let rows = build_server_rows(&now, Some(&prev), 1.0);
+        // col 0 = ZONE。昇順: alpha, beta, gamma。
+        assert_eq!(
+            sorted_server_zones(&rows, 0, false),
+            vec!["alpha", "beta", "gamma"]
+        );
+        // 降順: gamma, beta, alpha。
+        assert_eq!(
+            sorted_server_zones(&rows, 0, true),
+            vec!["gamma", "beta", "alpha"]
+        );
+    }
+
+    #[test]
+    fn sort_server_by_in_per_sec() {
+        let (prev, now) = three_zone_status();
+        let rows = build_server_rows(&now, Some(&prev), 1.0);
+        // col 6 = IN/s。降順: alpha(300) > gamma(200) > beta(100)。
+        assert_eq!(
+            sorted_server_zones(&rows, 6, true),
+            vec!["alpha", "gamma", "beta"]
+        );
+    }
+
+    #[test]
+    fn sort_server_all_columns_produce_deterministic_order() {
+        // 受け入れ条件「全ソート列が動作する」: Server 8 列すべてで panic せず
+        // 全行が保持されること (件数不変) を確認する。
+        let (prev, now) = three_zone_status();
+        let rows = build_server_rows(&now, Some(&prev), 1.0);
+        for col in 0u8..8 {
+            for desc in [true, false] {
+                let out = sorted_server_zones(&rows, col, desc);
+                assert_eq!(out.len(), 3, "col {col} desc={desc} lost rows");
+            }
+        }
+    }
+
+    #[test]
+    fn sort_server_p95_separates_histogram_and_average_groups() {
+        // histogram あり zone (Value) と histogram なし zone (Average) を混在させ、
+        // p95 ソートで Value 群が常に Average 群より上に来ることを確認する。
+        let prev = status_with_zones(
+            1000,
+            &[
+                (
+                    "hist-low",
+                    0,
+                    0,
+                    0,
+                    0,
+                    (0, 0, 0, 0, 0),
+                    Some((vec![10, 50, 100], vec![0, 0, 0])),
+                ),
+                ("avg-high", 0, 0, 0, 9999, (0, 0, 0, 0, 0), None),
+            ],
+        );
+        let now = status_with_zones(
+            2000,
+            &[
+                // histogram あり: p95 は低い値 (~10-50ms)
+                (
+                    "hist-low",
+                    100,
+                    0,
+                    0,
+                    0,
+                    (0, 100, 0, 0, 0),
+                    Some((vec![10, 50, 100], vec![0, 100, 100])),
+                ),
+                // histogram なし: Average(9999ms) という非常に大きな平均
+                ("avg-high", 100, 0, 0, 9999, (0, 100, 0, 0, 0), None),
+            ],
+        );
+        let rows = build_server_rows(&now, Some(&prev), 1.0);
+        // col 5 = p95。降順でも昇順でも、histogram 群 (hist-low) が Average 群
+        // (avg-high) より **上** に来る (tier 固定)。
+        let desc = sorted_server_zones(&rows, 5, true);
+        assert_eq!(
+            desc,
+            vec!["hist-low", "avg-high"],
+            "histogram group must stay above Average group even with huge avg value"
+        );
+        let asc = sorted_server_zones(&rows, 5, false);
+        assert_eq!(
+            asc,
+            vec!["hist-low", "avg-high"],
+            "tier order is fixed regardless of direction"
+        );
+    }
+
+    #[test]
+    fn sort_upstream_by_state_up_first() {
+        let s = status_with_upstreams(
+            1000,
+            &[
+                ("g", "d:1", 0, 0, 0, 0, (0, 0, 0, 0, 0), None, false, true),
+                ("g", "u:1", 0, 0, 0, 0, (0, 0, 0, 0, 0), None, false, false),
+                ("g", "b:1", 0, 0, 0, 0, (0, 0, 0, 0, 0), None, true, false),
+            ],
+        );
+        let mut rows = build_upstream_rows(&s, None, 0.0);
+        // col 8 = STATE。昇順 = up → backup → down (sort_rank 昇順)。
+        sort_upstream_rows(
+            &mut rows,
+            SortState {
+                column: 8,
+                descending: false,
+            },
+        );
+        let states: Vec<UpstreamState> = rows.iter().map(|r| r.state).collect();
+        assert_eq!(
+            states,
+            vec![
+                UpstreamState::Up,
+                UpstreamState::Backup,
+                UpstreamState::Down
+            ]
+        );
+    }
+
+    #[test]
+    fn filter_is_case_insensitive_substring() {
+        let s = status_with_zones(
+            1000,
+            &[
+                ("api-gateway", 0, 0, 0, 0, (0, 0, 0, 0, 0), None),
+                ("static-assets", 0, 0, 0, 0, (0, 0, 0, 0, 0), None),
+                ("API-internal", 0, 0, 0, 0, (0, 0, 0, 0, 0), None),
+            ],
+        );
+        let mut rows = build_server_rows(&s, None, 0.0);
+        // 大文字 "API" でも小文字 zone "api-gateway" にマッチする。
+        retain_matching(&mut rows, "API", |r| r.zone.as_str());
+        let mut zones: Vec<&str> = rows.iter().map(|r| r.zone.as_str()).collect();
+        zones.sort();
+        assert_eq!(zones, vec!["API-internal", "api-gateway"]);
+    }
+
+    #[test]
+    fn filter_empty_keeps_all_rows() {
+        let s = status_with_zones(
+            1000,
+            &[
+                ("a", 0, 0, 0, 0, (0, 0, 0, 0, 0), None),
+                ("b", 0, 0, 0, 0, (0, 0, 0, 0, 0), None),
+            ],
+        );
+        let mut rows = build_server_rows(&s, None, 0.0);
+        retain_matching(&mut rows, "", |r| r.zone.as_str());
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn selected_zone_respects_filter_and_cursor() {
+        // フィルタ適用後の並びで cursor が効くこと (受け入れ条件)。
+        let mut app = App::new();
+        app.on_fetch_ok(status_with_zones(
+            1000,
+            &[
+                ("api-a", 0, 0, 0, 0, (0, 0, 0, 0, 0), None),
+                ("static", 0, 0, 0, 0, (0, 0, 0, 0, 0), None),
+                ("api-b", 0, 0, 0, 0, (0, 0, 0, 0, 0), None),
+            ],
+        ));
+        app.filter = "api".to_string();
+        // ZONE 昇順 (col 0 desc=false) で api-a, api-b。cursor=1 → api-b。
+        app.sort = SortState {
+            column: 0,
+            descending: false,
+        };
+        app.cursor = 1;
+        assert_eq!(selected_zone(&app).as_deref(), Some("api-b"));
+        // cursor=0 → api-a。
+        app.cursor = 0;
+        assert_eq!(selected_zone(&app).as_deref(), Some("api-a"));
+    }
+
+    #[test]
+    fn selected_zone_for_upstream_tab() {
+        let mut app = App::new();
+        app.active_tab = Tab::Upstream;
+        app.on_fetch_ok(status_with_upstreams(
+            1000,
+            &[
+                ("g", "a:1", 0, 0, 0, 0, (0, 0, 0, 0, 0), None, false, false),
+                ("g", "b:1", 0, 0, 0, 0, (0, 0, 0, 0, 0), None, false, false),
+            ],
+        ));
+        app.sort = SortState {
+            column: 0,
+            descending: false,
+        };
+        app.cursor = 0;
+        assert_eq!(selected_zone(&app).as_deref(), Some("g/a:1"));
+    }
+
+    #[test]
+    fn server_columns_label_matches_headers() {
+        // 列マッピングの label が SERVER_HEADERS と一致すること (画面整合)。
+        for (i, h) in SERVER_HEADERS.iter().enumerate() {
+            let col = SortColumn::server_at(i as u8);
+            assert_eq!(col.label(), *h, "Server col {i}");
+        }
+        for (i, h) in UPSTREAM_HEADERS.iter().enumerate() {
+            let col = SortColumn::upstream_at(i as u8);
+            assert_eq!(col.label(), *h, "Upstream col {i}");
+        }
+    }
+
+    #[test]
+    fn render_applies_filter_to_visible_rows() {
+        let mut app = App::new();
+        app.on_fetch_ok(status_with_zones(
+            2000,
+            &[
+                ("api-gateway", 0, 0, 0, 0, (0, 0, 0, 0, 0), None),
+                ("static", 0, 0, 0, 0, (0, 0, 0, 0, 0), None),
+            ],
+        ));
+        app.filter = "api".to_string();
+        let out = draw(&app, 80, 6);
+        assert!(
+            out.contains("api-gateway"),
+            "filtered-in zone shown:\n{out}"
+        );
+        assert!(!out.contains("static"), "filtered-out zone hidden:\n{out}");
+        // visible_rows は絞り込み後の件数 (1)。
+        assert_eq!(app.visible_rows.get(), 1);
     }
 
     // ---------- render ----------

@@ -213,14 +213,54 @@ async fn event_loop(
 /// `AppEvent::Key` を `App` に反映する純関数。
 ///
 /// 扱うキー: F1 / `?` (help)、Enter (詳細オーバーレイを開く #32)、Esc
-/// (help → detail の順で閉じる)、カーソル移動 (#28)。ソート / フィルタは #31。
+/// (filter → help → detail の順で閉じる)、カーソル移動 (#28)、ソート (1-9 / F5)
+/// + フィルタ (F4 / `/` + 文字入力 / Backspace) (#31)。
 ///
 /// テスト容易性のため `App` への &mut 操作だけを引数に取り、terminal/IO は触らない。
 fn handle_key(app: &mut App, key: KeyEvent) {
+    // フィルタ入力モード中は、ほとんどのキーを「フィルタ文字列の編集」として扱う。
+    // ただし矢印キー等のカーソル移動は素通しして、絞り込みながら行を選べるように
+    // する (issue #31 受け入れ条件「フィルタ中も矢印キーカーソルが効く」)。
+    if app.filter_active {
+        match key.code {
+            // Esc / Enter で入力モードを抜ける。Esc は filter を空に戻す
+            // (最優先。下の通常 Esc 分岐より先に処理する)。Enter は filter を
+            // 残したまま確定して通常モードへ。
+            KeyCode::Esc => app.clear_filter(),
+            KeyCode::Enter => app.filter_active = false,
+            KeyCode::Backspace => app.pop_filter_char(),
+            // カーソル移動はフィルタ中も有効。
+            KeyCode::Up => app.cursor_up(),
+            KeyCode::Down => app.cursor_down(),
+            KeyCode::PageUp => app.cursor_page_up(),
+            KeyCode::PageDown => app.cursor_page_down(),
+            // 通常の文字は filter に追加する。制御文字は無視。
+            KeyCode::Char(c) if !c.is_control() => app.push_filter_char(c),
+            _ => {}
+        }
+        return;
+    }
+
     match key.code {
         // F1 / `?` で help モーダルを toggle (#33 受け入れ条件)。`?` は letter alias。
         KeyCode::F(1) | KeyCode::Char('?') => {
             app.show_help = !app.show_help;
+        }
+        // F4 / `/` でフィルタ入力モードに入る (#31)。help / detail が開いている
+        // ときは無視する (モーダル優先)。
+        KeyCode::F(4) | KeyCode::Char('/') if !app.show_help && app.detail_zone.is_none() => {
+            app.enter_filter();
+        }
+        // F5: ソート方向反転 (#31)。
+        KeyCode::F(5) if !app.show_help => {
+            app.toggle_sort_dir();
+        }
+        // 数字キー 1-9: ソート列指定 (#31)。同じ列なら方向反転。
+        KeyCode::Char(c @ '1'..='9') if !app.show_help => {
+            // '1'..='9' なので to_digit は必ず Some。
+            if let Some(d) = c.to_digit(10) {
+                app.apply_sort_key(d as u8);
+            }
         }
         // Enter: cursor が指す zone の詳細オーバーレイを開く (#32)。
         // help が開いているときは Enter を無視する (モーダル優先)。
@@ -229,14 +269,18 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 app.detail_zone = Some(zone);
             }
         }
-        // Esc は help → detail の順に閉じる (filter は #31 で追加予定)。
+        // Esc は help → detail の順に閉じる (filter 入力中は上の早期 return で処理済み)。
         KeyCode::Esc if app.show_help => {
             app.show_help = false;
         }
         KeyCode::Esc if app.detail_zone.is_some() => {
             app.detail_zone = None;
         }
-        // issue #28: 行カーソル移動 (CLAUDE.md キー割り当て準拠)。ソート / フィルタは #31。
+        // Esc: filter が非空 (入力モードは抜けたが絞り込みは残っている) なら解除。
+        KeyCode::Esc if !app.filter.is_empty() => {
+            app.clear_filter();
+        }
+        // issue #28: 行カーソル移動 (CLAUDE.md キー割り当て準拠)。
         KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
             app.cursor_up();
         }
@@ -246,7 +290,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::PageUp => app.cursor_page_up(),
         KeyCode::PageDown => app.cursor_page_down(),
         _ => {
-            // 残りのキー (Tab / 1-9 / F4 / F5 等) は後続 issue で実装。
+            // 残りのキー (Tab 切替等) は後続 issue で実装。
         }
     }
 }
@@ -438,6 +482,134 @@ mod tests {
         assert!(app.detail_zone.is_some());
         handle_key(&mut app, press(KeyCode::Esc));
         assert!(app.detail_zone.is_none(), "Esc should close detail");
+    }
+
+    // ---------- ソート / フィルタ (issue #31) ----------
+
+    fn press_char(c: char) -> KeyEvent {
+        press(KeyCode::Char(c))
+    }
+
+    #[test]
+    fn digit_key_sets_sort_column() {
+        let mut app = App::new();
+        handle_key(&mut app, press_char('2')); // Server col 1 = RPS
+        assert_eq!(app.sort.column, 1);
+        assert!(app.sort.descending);
+    }
+
+    #[test]
+    fn same_digit_key_toggles_direction() {
+        let mut app = App::new();
+        handle_key(&mut app, press_char('2'));
+        assert!(app.sort.descending);
+        handle_key(&mut app, press_char('2'));
+        assert!(!app.sort.descending, "second press toggles to ascending");
+    }
+
+    #[test]
+    fn f5_toggles_sort_direction() {
+        let mut app = App::new();
+        assert!(app.sort.descending);
+        handle_key(&mut app, press(KeyCode::F(5)));
+        assert!(!app.sort.descending);
+        handle_key(&mut app, press(KeyCode::F(5)));
+        assert!(app.sort.descending);
+    }
+
+    #[test]
+    fn f4_enters_filter_mode() {
+        let mut app = App::new();
+        handle_key(&mut app, press(KeyCode::F(4)));
+        assert!(app.filter_active);
+    }
+
+    #[test]
+    fn slash_enters_filter_mode() {
+        let mut app = App::new();
+        handle_key(&mut app, press_char('/'));
+        assert!(app.filter_active);
+    }
+
+    #[test]
+    fn typing_in_filter_mode_appends_chars() {
+        let mut app = App::new();
+        handle_key(&mut app, press(KeyCode::F(4)));
+        handle_key(&mut app, press_char('a'));
+        handle_key(&mut app, press_char('p'));
+        handle_key(&mut app, press_char('i'));
+        assert_eq!(app.filter, "api");
+    }
+
+    #[test]
+    fn backspace_in_filter_mode_removes_last_char() {
+        let mut app = App::new();
+        app.enter_filter();
+        for c in ['a', 'b', 'c'] {
+            handle_key(&mut app, press_char(c));
+        }
+        handle_key(&mut app, press(KeyCode::Backspace));
+        assert_eq!(app.filter, "ab");
+    }
+
+    #[test]
+    fn esc_in_filter_mode_clears_filter() {
+        let mut app = App::new();
+        app.enter_filter();
+        handle_key(&mut app, press_char('x'));
+        handle_key(&mut app, press(KeyCode::Esc));
+        assert!(!app.filter_active);
+        assert!(app.filter.is_empty());
+    }
+
+    #[test]
+    fn enter_in_filter_mode_confirms_keeps_filter() {
+        let mut app = App::new();
+        app.enter_filter();
+        handle_key(&mut app, press_char('a'));
+        handle_key(&mut app, press(KeyCode::Enter));
+        assert!(!app.filter_active, "Enter exits input mode");
+        assert_eq!(app.filter, "a", "Enter keeps the filter applied");
+    }
+
+    #[test]
+    fn cursor_works_during_filter_mode() {
+        // 受け入れ条件: フィルタ中も矢印キーカーソルが効く。
+        let mut app = app_with_server_zone("alpha");
+        app.visible_rows.set(5);
+        app.enter_filter();
+        handle_key(&mut app, press(KeyCode::Down));
+        assert_eq!(app.cursor, 1, "Down moves cursor while filtering");
+        handle_key(&mut app, press(KeyCode::Up));
+        assert_eq!(app.cursor, 0, "Up moves cursor while filtering");
+    }
+
+    #[test]
+    fn esc_clears_applied_filter_after_confirm() {
+        // 入力モードを Enter で抜けたあと、Esc で残った filter を解除できる。
+        let mut app = App::new();
+        app.enter_filter();
+        handle_key(&mut app, press_char('a'));
+        handle_key(&mut app, press(KeyCode::Enter));
+        assert_eq!(app.filter, "a");
+        handle_key(&mut app, press(KeyCode::Esc));
+        assert!(app.filter.is_empty(), "Esc clears the leftover filter");
+    }
+
+    #[test]
+    fn digit_keys_ignored_while_help_open() {
+        let mut app = App::new();
+        app.show_help = true;
+        handle_key(&mut app, press_char('2'));
+        assert_eq!(app.sort.column, 0, "sort unchanged while help open");
+    }
+
+    #[test]
+    fn f4_ignored_while_help_open() {
+        let mut app = App::new();
+        app.show_help = true;
+        handle_key(&mut app, press(KeyCode::F(4)));
+        assert!(!app.filter_active, "filter not entered while help open");
     }
 
     #[test]
