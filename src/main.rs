@@ -205,8 +205,8 @@ async fn event_loop(
 
 /// `AppEvent::Key` を `App` に反映する純関数。
 ///
-/// 本 PR (#33) で扱うキーは F1 / `?` / Esc のみ。後続 issue (#28+ / #31 / #32)
-/// で table カーソル / ソート / フィルタ / 詳細オーバーレイ向けの分岐を増やす。
+/// 扱うキー: F1 / `?` (help)、Enter (詳細オーバーレイを開く #32)、Esc
+/// (help → detail の順で閉じる)、カーソル移動 (#28)。ソート / フィルタは #31。
 ///
 /// テスト容易性のため `App` への &mut 操作だけを引数に取り、terminal/IO は触らない。
 fn handle_key(app: &mut App, key: KeyEvent) {
@@ -215,10 +215,19 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::F(1) | KeyCode::Char('?') => {
             app.show_help = !app.show_help;
         }
-        // Esc は help / detail / filter を順に閉じる。本 PR では help のみ扱う。
-        // detail / filter は #31 / #32 で同じ Esc に挙動を足す予定。
+        // Enter: cursor が指す zone の詳細オーバーレイを開く (#32)。
+        // help が開いているときは Enter を無視する (モーダル優先)。
+        KeyCode::Enter if !app.show_help => {
+            if let Some(zone) = ui::table::selected_zone(app) {
+                app.detail_zone = Some(zone);
+            }
+        }
+        // Esc は help → detail の順に閉じる (filter は #31 で追加予定)。
         KeyCode::Esc if app.show_help => {
             app.show_help = false;
+        }
+        KeyCode::Esc if app.detail_zone.is_some() => {
+            app.detail_zone = None;
         }
         // issue #28: 行カーソル移動 (CLAUDE.md キー割り当て準拠)。ソート / フィルタは #31。
         KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
@@ -230,7 +239,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::PageUp => app.cursor_page_up(),
         KeyCode::PageDown => app.cursor_page_down(),
         _ => {
-            // 残りのキー (Tab / 1-9 / F4 / F5 / Enter 等) は後続 issue で実装。
+            // 残りのキー (Tab / 1-9 / F4 / F5 等) は後続 issue で実装。
         }
     }
 }
@@ -289,6 +298,7 @@ async fn sigterm_future() {
 mod tests {
     use super::*;
     use crossterm::event::{KeyEventKind, KeyEventState, KeyModifiers};
+    use vozltop::model::VtsStatus;
 
     fn press(code: KeyCode) -> KeyEvent {
         KeyEvent {
@@ -297,6 +307,34 @@ mod tests {
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         }
+    }
+
+    /// serverZones 入りの最小 snapshot を push した App を作る。
+    fn app_with_server_zone(zone: &str) -> App {
+        let raw = serde_json::json!({
+            "hostName": "h", "nginxVersion": "1", "moduleVersion": "v",
+            "loadMsec": 0u64, "nowMsec": 1000u64,
+            "connections": {
+                "active": 0, "reading": 0, "writing": 0,
+                "waiting": 0, "accepted": 0, "handled": 0, "requests": 0
+            },
+            "serverZones": {
+                zone: {
+                    "requestCounter": 0, "inBytes": 0, "outBytes": 0,
+                    "responses": {
+                        "1xx": 0, "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0,
+                        "miss": 0, "bypass": 0, "expired": 0, "stale": 0,
+                        "updating": 0, "revalidated": 0, "hit": 0, "scarce": 0
+                    },
+                    "requestMsec": 0, "requestMsecCounter": 0,
+                    "requestBuckets": { "msecs": [], "counters": [] }
+                }
+            }
+        });
+        let status: VtsStatus = serde_json::from_value(raw).unwrap();
+        let mut app = App::new();
+        app.on_fetch_ok(status);
+        app
     }
 
     #[test]
@@ -346,5 +384,57 @@ mod tests {
         handle_key(&mut app, press(KeyCode::Char('x')));
         handle_key(&mut app, press(KeyCode::F(5)));
         assert!(!app.show_help);
+    }
+
+    // ---------- detail overlay (issue #32) ----------
+
+    #[test]
+    fn enter_opens_detail_for_selected_zone() {
+        let mut app = app_with_server_zone("alpha");
+        assert!(app.detail_zone.is_none());
+        handle_key(&mut app, press(KeyCode::Enter));
+        assert_eq!(app.detail_zone.as_deref(), Some("alpha"));
+    }
+
+    #[test]
+    fn enter_is_noop_without_snapshot() {
+        // snapshot 未取得 (Connecting) では選択 zone が無いので Enter は no-op。
+        let mut app = App::new();
+        handle_key(&mut app, press(KeyCode::Enter));
+        assert!(app.detail_zone.is_none());
+    }
+
+    #[test]
+    fn enter_ignored_while_help_open() {
+        // help モーダルが開いているときは Enter で detail を開かない。
+        let mut app = app_with_server_zone("alpha");
+        app.show_help = true;
+        handle_key(&mut app, press(KeyCode::Enter));
+        assert!(app.detail_zone.is_none());
+    }
+
+    #[test]
+    fn esc_closes_detail_when_open() {
+        let mut app = app_with_server_zone("alpha");
+        handle_key(&mut app, press(KeyCode::Enter));
+        assert!(app.detail_zone.is_some());
+        handle_key(&mut app, press(KeyCode::Esc));
+        assert!(app.detail_zone.is_none(), "Esc should close detail");
+    }
+
+    #[test]
+    fn esc_closes_help_before_detail() {
+        // help と detail が両方開いているとき、Esc はまず help を閉じる。
+        let mut app = app_with_server_zone("alpha");
+        handle_key(&mut app, press(KeyCode::Enter));
+        app.show_help = true;
+        handle_key(&mut app, press(KeyCode::Esc));
+        assert!(!app.show_help, "first Esc closes help");
+        assert!(
+            app.detail_zone.is_some(),
+            "detail stays open after first Esc"
+        );
+        handle_key(&mut app, press(KeyCode::Esc));
+        assert!(app.detail_zone.is_none(), "second Esc closes detail");
     }
 }

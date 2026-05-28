@@ -417,6 +417,29 @@ pub(crate) fn format_rps(rps: f64) -> String {
     }
 }
 
+/// 現在の `active_tab` + `cursor` が指す zone 名を返す (Enter で詳細を開くため)。
+///
+/// Server タブは RPS 降順ソート後の行から `cursor` 位置を引く (render と同じ順)。
+/// snapshot 未取得 / 行 0 件 / 未実装タブ (Upstream / Cache は #29 / #30) は
+/// `None`。後続タブが実装されたら本関数に行解決を足す。
+pub fn selected_zone(app: &App) -> Option<String> {
+    if app.active_tab != Tab::Server {
+        return None;
+    }
+    let now = app.history.latest()?;
+    let prev = app.history.previous();
+    let dt_secs = match prev {
+        Some(p) => (now.status.now_msec.saturating_sub(p.status.now_msec) as f64) / 1000.0,
+        None => 0.0,
+    };
+    let rows = build_server_rows(&now.status, prev.map(|p| &p.status), dt_secs);
+    if rows.is_empty() {
+        return None;
+    }
+    let idx = app.cursor.min(rows.len() - 1);
+    Some(rows[idx].zone.clone())
+}
+
 // ---------- render ----------
 
 /// 現在の `active_tab` に応じて Server / Upstream / Cache を描画する。
