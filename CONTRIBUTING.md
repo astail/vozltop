@@ -106,9 +106,33 @@ footer に `closes #N` / `fixes #N` / `resolves #N` を書いておくと、merg
 | Unit | `src/**/*.rs` の `#[cfg(test)] mod tests` | 純粋関数 / 派生メトリクス / CLI パース |
 | Integration (deserialize) | `tests/deserialize.rs` | 実 nginx-vts JSON が壊れずパースできる |
 | Integration (derived) | `tests/derived.rs` | RPS / p95 / hit% の計算が fixture と一致 |
-| UI snapshot | `insta` | 4 状態 × 3 タブの描画差分 (#35) |
+| UI snapshot | `insta` (`tests/ui_snapshots.rs`) | 4 状態 × 3 タブ + 詳細/help オーバーレイの描画差分 (#35) |
 
 CI は `cargo test` / `cargo clippy -D warnings` / `cargo fmt --check` を ubuntu / macos の両 OS で実行します。Windows 対応は v1 スコープ外です。
+
+### UI snapshot (insta) の更新手順
+
+`tests/ui_snapshots.rs` は `TestBackend` で描画した 80×24 の画面 (色を含まないシンボルのみ) を
+`tests/snapshots/*.snap` に焼き付けます。UI の描画を **意図的に** 変えたときは snapshot を
+更新する必要があります。
+
+```bash
+# 1. cargo-insta を入れる (初回のみ)
+cargo install cargo-insta
+
+# 2. 変更後にテストを走らせて差分を対話レビュー → accept / reject
+cargo insta review
+
+# cargo-insta を入れたくない場合は、テスト実行で *.snap.new を生成してから
+# 目視で内容を確認し、問題なければ accept (リネーム) する:
+cargo test --test ui_snapshots          # 差分があると *.snap.new が出てテストは fail
+cargo insta accept                       # もしくは *.snap.new を確認の上 *.snap へ
+```
+
+- **`*.snap.new` を残したままコミット/マージしない** (受け入れ条件)。`cargo test` が `.snap`
+  との不一致で fail するため、CI が検出します。
+- snapshot は色/スタイルを含まずシンボルのみなので、`--no-color` 等の theme 変更では差分は出ません。
+- 意図しない描画差分が出た場合は実装側の回帰を疑ってください (snapshot を盲目的に accept しない)。
 
 ### Panic hook の手動検証 (issue #42)
 
