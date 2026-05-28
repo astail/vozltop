@@ -38,6 +38,7 @@
 //! `Fill(1)` を本体に置き、極端な resize で本体が 0 行になっても破綻しない
 //! 構成にしている。
 
+pub mod detail;
 pub mod footer;
 pub mod header;
 pub mod help;
@@ -92,6 +93,11 @@ pub fn render(f: &mut Frame<'_>, app: &App) {
     // 旧 footer_widget() は issue #33 で footer::render に置き換え。
     // App::sort / App::filter を読むため引数化が必要。
     footer::render(f, app, rows[idx]);
+
+    // detail overlay (#32): detail_zone が Some のとき中央に重ねる。
+    if app.detail_zone.is_some() {
+        detail::render_overlay(f, app, area);
+    }
 
     // help overlay は最後に重ねる (issue #33)。base layout と独立に描く。
     // detail / filter overlay (#31 / #32) とも排他しない設計。
