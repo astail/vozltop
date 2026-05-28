@@ -58,7 +58,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState};
 use ratatui::Frame;
 
-use crate::model::{ServerZone, UpstreamServer, VtsStatus};
+use crate::model::{Responses, ServerZone, UpstreamServer, VtsStatus};
 use crate::state::{percentile, App, PercentileResult, Tab};
 use crate::ui::header::format_bps;
 
@@ -70,6 +70,12 @@ pub const SERVER_HEADERS: [&str; 8] = [
 /// 9 列ヘッダ (Upstream タブ)。Server タブ + STATE。
 pub const UPSTREAM_HEADERS: [&str; 9] = [
     "ZONE", "RPS", "2xx%", "4xx%", "5xx%", "p95", "IN/s", "OUT/s", "STATE",
+];
+
+/// 8 列ヘッダ (Cache タブ)。cacheZones は request_counter / latency を持たない
+/// ため Server / Upstream とは列構成が異なる (HIT% / MISS / EXPIRED / STALE / USED)。
+pub const CACHE_HEADERS: [&str; 8] = [
+    "ZONE", "HIT%", "MISS", "EXPIRED", "STALE", "USED", "IN/s", "OUT/s",
 ];
 
 /// Upstream server の状態。`down` / `backup` / `up` の 3 値。
@@ -330,6 +336,96 @@ pub(crate) fn format_upstream_state(state: UpstreamState, mono: bool) -> &'stati
     }
 }
 
+/// Cache タブ 1 行ぶんの確定済み描画データ。
+///
+/// cacheZones は `request_counter` / latency histogram を持たないため Server /
+/// Upstream とは別の列構成。`hit_pct` は累積カウンタからの絶対値 (分母 0 で
+/// `None`)。`miss` / `expired` / `stale` は累積カウント。`used_size` / `max_size`
+/// は bytes で、`bw_*` のみ前 snapshot との差分から算出する。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CacheRow {
+    pub zone: String,
+    pub hit_pct: Option<f64>,
+    pub miss: u64,
+    pub expired: u64,
+    pub stale: u64,
+    pub used_size: u64,
+    pub max_size: u64,
+    pub bw_in_per_sec: f64,
+    pub bw_out_per_sec: f64,
+}
+
+/// `now` (最新 snapshot) と `prev` (前 snapshot)、`dt_secs` (経過秒) から
+/// Cache タブの行を組み立てる。
+///
+/// hit% / MISS / EXPIRED / STALE / USED は累積カウンタ・サイズの絶対値なので
+/// `prev` 不要 (BW のみ差分)。`prev` が `None` / `dt_secs <= 0` の初 tick は
+/// BW を 0 にする。
+pub(crate) fn build_cache_rows(
+    now: &VtsStatus,
+    prev: Option<&VtsStatus>,
+    dt_secs: f64,
+) -> Vec<CacheRow> {
+    let mut rows: Vec<CacheRow> = now
+        .cache_zones
+        .iter()
+        .map(|(name, zone)| {
+            let prev_zone = prev.and_then(|p| p.cache_zones.get(name));
+            let bw_in = per_sec(prev_zone.map(|z| z.in_bytes), zone.in_bytes, dt_secs);
+            let bw_out = per_sec(prev_zone.map(|z| z.out_bytes), zone.out_bytes, dt_secs);
+            CacheRow {
+                zone: name.clone(),
+                hit_pct: cache_hit_pct(&zone.responses),
+                miss: zone.responses.miss,
+                expired: zone.responses.expired,
+                stale: zone.responses.stale,
+                used_size: zone.used_size,
+                max_size: zone.max_size,
+                bw_in_per_sec: bw_in,
+                bw_out_per_sec: bw_out,
+            }
+        })
+        .collect();
+
+    sort_cache_rows_default(&mut rows);
+    rows
+}
+
+/// デフォルトソート (HIT% 降順、`None` (分母 0) は末尾、tie は ZONE 名昇順)。
+///
+/// issue #30 受け入れ条件。issue #31 で `App::sort` 経由の動的ソートに
+/// 差し替える予定。
+pub(crate) fn sort_cache_rows_default(rows: &mut [CacheRow]) {
+    rows.sort_by(|a, b| {
+        match (a.hit_pct, b.hit_pct) {
+            // 両方値あり: HIT% 降順
+            (Some(av), Some(bv)) => bv.partial_cmp(&av).unwrap_or(Ordering::Equal),
+            // 片方のみ値あり: 値ありを先頭、None を末尾
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
+        }
+        .then_with(|| a.zone.cmp(&b.zone))
+    });
+}
+
+/// cache zone の hit 率 (パーセント)。分母は
+/// `hit + miss + bypass + expired + stale + updating + revalidated + scarce`。
+/// 分母 0 (まだキャッシュ系応答が無い) なら `None`。
+///
+/// `state::derived::cache_hit_pct` と同じ算出だが、render 層は derived snapshot
+/// ではなく生 snapshot から再計算する設計 (Server / Upstream と同じ) なので
+/// table 層に閉じた private helper として持つ。
+fn cache_hit_pct(r: &Responses) -> Option<f64> {
+    let denom =
+        r.hit + r.miss + r.bypass + r.expired + r.stale + r.updating + r.revalidated + r.scarce;
+    if denom == 0 {
+        None
+    } else {
+        Some(r.hit as f64 * 100.0 / denom as f64)
+    }
+}
+
 fn per_sec(prev: Option<u64>, now: u64, dt_secs: f64) -> f64 {
     match prev {
         Some(p) if dt_secs > 0.0 => (now.saturating_sub(p)) as f64 / dt_secs,
@@ -417,6 +513,45 @@ pub(crate) fn format_rps(rps: f64) -> String {
     }
 }
 
+/// bytes を 1024 進・小数 1 桁で人間可読化する (`"1.2 GB"` 等)。
+///
+/// `header::format_bps` と同じ単位選択ロジックだが `/s` を付けない (USED 列の
+/// used / max サイズ表示用)。issue #30 は USED を `humansize` で出すことを挙げて
+/// いるが、本プロジェクトは既に 1024 進の inline フォーマッタ (`format_bps`) を
+/// 採用済みで、新規依存を足すより既存スタイルに合わせる方が一貫する
+/// (CLAUDE.md「依存」/ Karpathy 原則 2・3)。`format_bps` への共通化は header
+/// (#27) への波及を伴うため本 PR の scope 外。
+pub(crate) fn format_size(n: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    const TB: u64 = GB * 1024;
+    if n < KB {
+        format!("{n} B")
+    } else if n < MB {
+        format!("{:.1} KB", n as f64 / KB as f64)
+    } else if n < GB {
+        format!("{:.1} MB", n as f64 / MB as f64)
+    } else if n < TB {
+        format!("{:.1} GB", n as f64 / GB as f64)
+    } else {
+        format!("{:.1} TB", n as f64 / TB as f64)
+    }
+}
+
+/// USED 列を `"4.0 KB / 8.0 MB (0%)"` のように整形する。
+///
+/// `max_size == 0` (cache 未設定 / max 不明) のときは割合を出せないため
+/// `"used / max"` のみ (パーセント無し)。割合は整数 % に丸める。
+pub(crate) fn format_used(used: u64, max: u64) -> String {
+    if max == 0 {
+        format!("{} / {}", format_size(used), format_size(max))
+    } else {
+        let pct = (used as f64 / max as f64 * 100.0).round() as u64;
+        format!("{} / {} ({}%)", format_size(used), format_size(max), pct)
+    }
+}
+
 /// 現在の `active_tab` + `cursor` が指す zone 名を返す (Enter で詳細を開くため)。
 ///
 /// Server タブは RPS 降順ソート後の行から `cursor` 位置を引く (render と同じ順)。
@@ -447,22 +582,11 @@ pub fn selected_zone(app: &App) -> Option<String> {
 /// 副作用:
 /// - `app.visible_rows` を「表示行数」で更新 (cursor 上限算出用)。
 /// - `app.page_size` を「body 高さ」で更新 (PgUp/PgDn の移動量)。
-///
-/// Cache タブは issue #30 で実装するまでプレースホルダ。
 pub fn render(f: &mut Frame<'_>, app: &App, area: Rect) {
     match app.active_tab {
         Tab::Server => render_server(f, app, area),
         Tab::Upstream => render_upstream(f, app, area),
-        Tab::Cache => {
-            let p = Paragraph::new(Line::from(Span::styled(
-                "(Cache tab — implemented in #30)",
-                Style::default().add_modifier(Modifier::DIM),
-            )));
-            f.render_widget(p, area);
-            app.visible_rows.set(0);
-            app.page_size
-                .set(area.height.saturating_sub(1).max(1) as usize);
-        }
+        Tab::Cache => render_cache(f, app, area),
     }
 }
 
@@ -632,6 +756,86 @@ fn render_upstream(f: &mut Frame<'_>, app: &App, area: Rect) {
         Constraint::Length(10), // IN/s
         Constraint::Length(10), // OUT/s
         Constraint::Length(7),  // STATE ("backup" = 6 字 + 余白 1)
+    ];
+    let row_count = body_rows.len();
+
+    let table = Table::new(body_rows, widths)
+        .header(header)
+        .row_highlight_style(app.theme.row_selected);
+
+    let mut state = TableState::default();
+    let clamped = if row_count == 0 {
+        None
+    } else {
+        Some(app.cursor.min(row_count - 1))
+    };
+    state.select(clamped);
+
+    f.render_stateful_widget(table, area, &mut state);
+
+    app.visible_rows.set(row_count);
+    app.page_size
+        .set(area.height.saturating_sub(1).max(1) as usize);
+}
+
+/// Cache タブを `area` に描画する。
+///
+/// 副作用は `render_server` と同じ (`app.visible_rows` / `app.page_size`)。
+/// cacheZones は latency / status を持たないため列構成は HIT% / MISS / EXPIRED /
+/// STALE / USED。HIT% が分母 0 で取れない zone は `—` 表示。
+fn render_cache(f: &mut Frame<'_>, app: &App, area: Rect) {
+    let latest = app.history.latest();
+
+    let Some(now) = latest else {
+        let p = Paragraph::new(Line::from(Span::styled(
+            "waiting for first VTS snapshot…",
+            Style::default().add_modifier(Modifier::DIM),
+        )));
+        f.render_widget(p, area);
+        app.visible_rows.set(0);
+        app.page_size
+            .set(area.height.saturating_sub(1).max(1) as usize);
+        return;
+    };
+
+    let prev = app.history.previous();
+    let dt_secs = match prev {
+        Some(p) => {
+            let dt_ms = now.status.now_msec.saturating_sub(p.status.now_msec) as f64;
+            dt_ms / 1000.0
+        }
+        None => 0.0,
+    };
+    let rows = build_cache_rows(&now.status, prev.map(|p| &p.status), dt_secs);
+
+    let header =
+        Row::new(CACHE_HEADERS.iter().map(|h| Cell::from(*h))).style(app.theme.table_header);
+
+    let body_rows: Vec<Row> = rows
+        .iter()
+        .map(|r| {
+            Row::new(vec![
+                Cell::from(r.zone.clone()),
+                Cell::from(format_ratio(r.hit_pct)),
+                Cell::from(r.miss.to_string()),
+                Cell::from(r.expired.to_string()),
+                Cell::from(r.stale.to_string()),
+                Cell::from(format_used(r.used_size, r.max_size)),
+                Cell::from(format_bps(r.bw_in_per_sec.round() as u64)),
+                Cell::from(format_bps(r.bw_out_per_sec.round() as u64)),
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Min(10),    // ZONE (可変)
+        Constraint::Length(7),  // HIT%
+        Constraint::Length(9),  // MISS
+        Constraint::Length(9),  // EXPIRED
+        Constraint::Length(8),  // STALE
+        Constraint::Length(22), // USED ("1.2 GB / 4.0 GB (30%)")
+        Constraint::Length(10), // IN/s
+        Constraint::Length(10), // OUT/s
     ];
     let row_count = body_rows.len();
 
@@ -1381,5 +1585,206 @@ mod tests {
             )],
         ));
         let _ = draw_upstream(&mut app, 80, 24);
+    }
+
+    // ========== Cache タブ (issue #30) ==========
+
+    /// cache zone 1 つぶんのテスト定義 (clippy::type-complexity 回避)。
+    /// `(name, max_size, used_size, in_bytes, out_bytes, hit, miss, expired, stale)`。
+    /// bypass / updating / revalidated / scarce は 0 固定。
+    type CacheSpec<'a> = (&'a str, u64, u64, u64, u64, u64, u64, u64, u64);
+
+    /// `cacheZones` 入りの VtsStatus を作る。
+    fn status_with_caches(now_msec: u64, zones: &[CacheSpec<'_>]) -> VtsStatus {
+        let cache_zones: serde_json::Map<String, serde_json::Value> = zones
+            .iter()
+            .map(|(name, max, used, ib, ob, hit, miss, expired, stale)| {
+                let v = serde_json::json!({
+                    "maxSize": max,
+                    "usedSize": used,
+                    "inBytes": ib,
+                    "outBytes": ob,
+                    "responses": {
+                        "1xx": 0, "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0,
+                        "miss": miss, "bypass": 0, "expired": expired, "stale": stale,
+                        "updating": 0, "revalidated": 0, "hit": hit, "scarce": 0,
+                    },
+                });
+                ((*name).to_string(), v)
+            })
+            .collect();
+        let raw = serde_json::json!({
+            "hostName": "h", "nginxVersion": "1", "moduleVersion": "v",
+            "loadMsec": 0u64, "nowMsec": now_msec,
+            "connections": {
+                "active": 0, "reading": 0, "writing": 0,
+                "waiting": 0, "accepted": 0, "handled": 0, "requests": 0
+            },
+            "cacheZones": serde_json::Value::Object(cache_zones),
+        });
+        serde_json::from_value(raw).unwrap()
+    }
+
+    /// `active_tab = Cache` に切り替えて描画した結果を文字列で返す。
+    fn draw_cache(app: &mut App, w: u16, h: u16) -> String {
+        app.active_tab = Tab::Cache;
+        draw(app, w, h)
+    }
+
+    // ---------- format_size / format_used ----------
+
+    #[test]
+    fn format_size_branches_on_magnitude() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(512), "512 B");
+        assert_eq!(format_size(1024), "1.0 KB");
+        assert_eq!(format_size(1536), "1.5 KB");
+        assert_eq!(format_size(1024 * 1024), "1.0 MB");
+        assert_eq!(format_size(1024u64.pow(3)), "1.0 GB");
+        assert_eq!(format_size(1024u64.pow(4)), "1.0 TB");
+    }
+
+    #[test]
+    fn format_used_shows_used_max_and_percent() {
+        // 2GB / 4GB = 50%
+        assert_eq!(
+            format_used(2 * 1024u64.pow(3), 4 * 1024u64.pow(3)),
+            "2.0 GB / 4.0 GB (50%)"
+        );
+        // 4096B / 8MB ≈ 0%
+        assert_eq!(format_used(4096, 8 * 1024 * 1024), "4.0 KB / 8.0 MB (0%)");
+    }
+
+    #[test]
+    fn format_used_without_max_omits_percent() {
+        // max_size == 0 のときは割合を出さない (0 除算回避)。
+        assert_eq!(format_used(0, 0), "0 B / 0 B");
+        assert_eq!(format_used(1024, 0), "1.0 KB / 0 B");
+    }
+
+    // ---------- cache_hit_pct ----------
+
+    #[test]
+    fn cache_hit_pct_none_when_denominator_zero() {
+        assert!(cache_hit_pct(&Responses::default()).is_none());
+    }
+
+    #[test]
+    fn cache_hit_pct_uses_full_denominator() {
+        // hit=90, miss=5, expired=3, stale=2 → denom=100 → 90%
+        let r = Responses {
+            hit: 90,
+            miss: 5,
+            expired: 3,
+            stale: 2,
+            ..Responses::default()
+        };
+        let pct = cache_hit_pct(&r).unwrap();
+        assert!((pct - 90.0).abs() < 1e-9, "expected 90.0, got {pct}");
+    }
+
+    // ---------- build_cache_rows ----------
+
+    #[test]
+    fn build_cache_rows_populates_fields_and_bw_from_diff() {
+        let prev = status_with_caches(1000, &[("c", 8_388_608, 4096, 0, 0, 100, 1, 0, 0)]);
+        let now = status_with_caches(2000, &[("c", 8_388_608, 8192, 1024, 4096, 199, 1, 0, 0)]);
+        let rows = build_cache_rows(&now, Some(&prev), 1.0);
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(r.zone, "c");
+        // hit=199, miss=1 → denom=200 → 99.5%
+        assert!(
+            (r.hit_pct.unwrap() - 99.5).abs() < 1e-9,
+            "hit% = {:?}",
+            r.hit_pct
+        );
+        assert_eq!(r.miss, 1);
+        assert_eq!(r.used_size, 8192);
+        assert_eq!(r.max_size, 8_388_608);
+        assert!((r.bw_in_per_sec - 1024.0).abs() < 1e-9);
+        assert!((r.bw_out_per_sec - 4096.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn build_cache_rows_initial_tick_has_zero_bw() {
+        let now = status_with_caches(1000, &[("c", 1024, 512, 9999, 9999, 10, 0, 0, 0)]);
+        let rows = build_cache_rows(&now, None, 0.0);
+        assert_eq!(rows[0].bw_in_per_sec, 0.0);
+        assert_eq!(rows[0].bw_out_per_sec, 0.0);
+        // hit% は累積絶対値なので初 tick でも算出される
+        assert!((rows[0].hit_pct.unwrap() - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sort_cache_rows_default_is_hit_pct_desc_none_last_zone_tiebreak() {
+        // zone a: 50%, zone b: 90%, zone c: denom 0 (None), zone d: 50%
+        let now = status_with_caches(
+            2000,
+            &[
+                ("a", 0, 0, 0, 0, 50, 50, 0, 0), // 50%
+                ("b", 0, 0, 0, 0, 90, 10, 0, 0), // 90%
+                ("c", 0, 0, 0, 0, 0, 0, 0, 0),   // None
+                ("d", 0, 0, 0, 0, 5, 5, 0, 0),   // 50%
+            ],
+        );
+        let rows = build_cache_rows(&now, None, 0.0);
+        // 期待順: b(90) → a(50, tie zone昇順) → d(50) → c(None 末尾)
+        let zones: Vec<&str> = rows.iter().map(|r| r.zone.as_str()).collect();
+        assert_eq!(zones, vec!["b", "a", "d", "c"]);
+    }
+
+    // ---------- render (Cache) ----------
+
+    #[test]
+    fn render_cache_shows_headers_and_values() {
+        let mut app = App::new();
+        app.on_fetch_ok(status_with_caches(
+            2000,
+            &[("demo_cache", 8_388_608, 4096, 0, 0, 99, 1, 0, 0)],
+        ));
+        let out = draw_cache(&mut app, 100, 5);
+        for h in &CACHE_HEADERS {
+            assert!(out.contains(h), "header {h} missing in:\n{out}");
+        }
+        assert!(out.contains("demo_cache"), "out:\n{out}");
+        // hit=99, miss=1 → 99.0%
+        assert!(out.contains("99.0%"), "out:\n{out}");
+        // USED: 4096 / 8MB
+        assert!(out.contains("4.0 KB / 8.0 MB"), "out:\n{out}");
+    }
+
+    #[test]
+    fn render_cache_shows_emdash_when_no_cache_responses() {
+        let mut app = App::new();
+        app.on_fetch_ok(status_with_caches(
+            2000,
+            &[("empty_cache", 1024, 0, 0, 0, 0, 0, 0, 0)],
+        ));
+        let out = draw_cache(&mut app, 100, 5);
+        assert!(out.contains("empty_cache"), "out:\n{out}");
+        // 分母 0 → HIT% は —
+        assert!(out.contains("—"), "out:\n{out}");
+    }
+
+    #[test]
+    fn render_cache_with_no_snapshot_shows_placeholder() {
+        let mut app = App::new();
+        app.active_tab = Tab::Cache;
+        let out = draw(&app, 80, 3);
+        assert!(
+            out.contains("waiting for first VTS snapshot"),
+            "out:\n{out}"
+        );
+    }
+
+    #[test]
+    fn cache_fits_in_80x24() {
+        let mut app = App::new();
+        app.on_fetch_ok(status_with_caches(
+            2000,
+            &[("demo_cache", 8_388_608, 4096, 0, 0, 100, 0, 0, 0)],
+        ));
+        let _ = draw_cache(&mut app, 80, 24);
     }
 }
