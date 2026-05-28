@@ -66,10 +66,7 @@ pub struct HistogramBars {
 impl HistogramBars {
     /// BarChart へ流すための借用ベクタ。`(&str, u64)` を要求する API に合わせる。
     fn as_borrowed(&self) -> Vec<(&str, u64)> {
-        self.bars
-            .iter()
-            .map(|(l, v)| (l.as_str(), *v))
-            .collect()
+        self.bars.iter().map(|(l, v)| (l.as_str(), *v)).collect()
     }
 }
 
@@ -86,7 +83,11 @@ pub fn build_detail(app: &App) -> Option<DetailView> {
     let prev = app.history.previous();
 
     match app.active_tab {
-        Tab::Server => Some(build_server_detail(zone_name, &now.status, prev.map(|p| &p.status))),
+        Tab::Server => Some(build_server_detail(
+            zone_name,
+            &now.status,
+            prev.map(|p| &p.status),
+        )),
         Tab::Upstream => Some(build_upstream_detail(
             zone_name,
             &now.status,
@@ -371,10 +372,7 @@ fn top_paragraph<'a>(view: &'a DetailView, app: &App) -> Paragraph<'a> {
                     "Average request_msec only: ",
                     Style::default().add_modifier(Modifier::DIM),
                 ),
-                Span::styled(
-                    format!("~{}ms", ms.round() as u64),
-                    app.theme.header_value,
-                ),
+                Span::styled(format!("~{}ms", ms.round() as u64), app.theme.header_value),
             ]),
             // NoData (zone 消失等) も同じ 1 行に倒す
             _ => Line::from(Span::styled(
@@ -615,7 +613,7 @@ mod tests {
         assert_eq!(h.bars[0].0, "<=5");
         assert_eq!(h.bars[1].0, "<=10");
         assert_eq!(h.bars[4].0, ">500"); // 最終 bucket は ">" プレフィックス
-        // delta 値が counter 通りに乗っていること
+                                         // delta 値が counter 通りに乗っていること
         let values: Vec<u64> = h.bars.iter().map(|(_, v)| *v).collect();
         assert_eq!(values, vec![10, 50, 100, 150, 200]);
         assert_eq!(h.max, 200);
@@ -631,7 +629,9 @@ mod tests {
         app.detail_zone = Some("z".to_string());
 
         let v = build_detail(&app).expect("detail");
-        assert!(matches!(v.percentiles.p50, PercentileResult::Average(x) if (x - 42.0).abs() < 1e-9));
+        assert!(
+            matches!(v.percentiles.p50, PercentileResult::Average(x) if (x - 42.0).abs() < 1e-9)
+        );
         assert!(matches!(v.percentiles.p95, PercentileResult::Average(_)));
         assert!(matches!(v.percentiles.p99, PercentileResult::Average(_)));
         assert!(v.histogram.is_none(), "histogram should be None");
@@ -644,13 +644,7 @@ mod tests {
         // 初 tick: histogram の差分は不能 → p* は NoData。bars は累積値そのまま。
         let s = status_with_server_zones(
             1000,
-            &[(
-                "z",
-                0,
-                0,
-                (0, 0, 0, 0, 0),
-                Some((vec![10, 50], vec![5, 7])),
-            )],
+            &[("z", 0, 0, (0, 0, 0, 0, 0), Some((vec![10, 50], vec![5, 7])))],
         );
         let mut app = App::new();
         app.on_fetch_ok(s);
@@ -660,7 +654,10 @@ mod tests {
         assert!(matches!(v.percentiles.p50, PercentileResult::NoData));
         let h = v.histogram.expect("present");
         // 累積値 (5, 7) がそのまま bar value になる
-        assert_eq!(h.bars.iter().map(|(_, v)| *v).collect::<Vec<_>>(), vec![5, 7]);
+        assert_eq!(
+            h.bars.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+            vec![5, 7]
+        );
     }
 
     #[test]

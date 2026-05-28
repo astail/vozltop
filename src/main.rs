@@ -430,7 +430,10 @@ mod tests {
         app.show_help = true;
         handle_key(&mut app, press(KeyCode::Esc));
         assert!(!app.show_help, "first Esc closes help");
-        assert!(app.detail_zone.is_some(), "detail stays open after first Esc");
+        assert!(
+            app.detail_zone.is_some(),
+            "detail stays open after first Esc"
+        );
         handle_key(&mut app, press(KeyCode::Esc));
         assert!(app.detail_zone.is_none(), "second Esc closes detail");
     }
