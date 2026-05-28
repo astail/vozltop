@@ -1,0 +1,28 @@
+---
+source: tests/ui_snapshots.rs
+expression: render_to_string(&app)
+---
+"[Disconnected]  consecutive failures: 5                                         "
+"Conn ████████1/1 ████████  active 1  reading 0  writing 1  waiting 0            "
+"RPS                                                    0/s          5xx 0.00%   "
+"in                          0 B/s       out                         0 B/s       "
+"ZONE             RPS      2xx%    4xx%    5xx%    p95      IN/s       OUT/s     "
+"*                510      100.0%  0.0%    0.0%    ~0ms     44.5 KB/s  84.0 KB/s "
+"_                180      100.0%  0.0%    0.0%    ~0ms     17.2 KB/s  29.7 KB/s "
+"api.example.test 180      100.0%  0.0%    0.0%    ~0ms     14.8 KB/s  29.7 KB/s "
+"web.example.test 150      100.0%  0.0%    0.0%    ~0ms     12.5 KB/s  24.6 KB/s "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"HTTP 500 Internal Server Error                                                  "
+"F1Help F4Filter F5Sort F10Quit  Tab:Zone Enter    Sort: ZONE ↓                  "

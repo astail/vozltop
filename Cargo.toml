@@ -30,6 +30,11 @@ url = "2"
 
 [dev-dependencies]
 pretty_assertions = "1"
+# issue #35: UI レンダリングの snapshot テスト。TestBackend の Display 出力を
+# 文字列 snapshot に焼き付けるため、yaml feature は使わない (serde_yaml は
+# unmaintained で cargo-deny advisory を踏むリスクがあり、TUI 描画は
+# プレーン文字列 snapshot の方が diff が読みやすい)。
+insta = "1"
 # issue #36: integration test 用の HTTP mock サーバ。tokio runtime で動く。
 wiremock = "0.6"
 
