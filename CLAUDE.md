@@ -168,6 +168,8 @@ OPTIONS:
   -H, --header <K: V>       追加ヘッダ（繰り返し可。`@path/to/file` でファイル読込）
       --insecure            TLS 証明書検証を無効化
       --no-color            色を無効化（環境変数 NO_COLOR=1 でも同等）
+      --alert-5xx-pct <PCT> 5xx 率が PCT% 以上の行をハイライト + ベル (0..=100)
+      --alert-p95-ms <MS>   p95 が MS ミリ秒以上の行をハイライト + ベル
 
 ENV:
   VOZLTOP_PASSWORD          設定時は `--user` の password を上書き（argv に secrets を残さないため）

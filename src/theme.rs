@@ -41,6 +41,9 @@ pub struct Theme {
     pub status_warn: Style,
     /// `AppStatus::Disconnected` のバナー。
     pub status_err: Style,
+    /// アラート閾値超過の行 (issue #47)。5xx エラー行 (`status_err`) より目立つよう
+    /// reversed で強調する。
+    pub alert: Style,
     /// `app.error_banner` の描画スタイル。
     pub error_banner: Style,
     /// nginx 再起動検出バナー。
@@ -67,6 +70,9 @@ impl Theme {
             status_ok: Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
             status_warn: Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             status_err: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+            alert: Style::new()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
             error_banner: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
             restart_banner: Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             footer: Style::new().fg(Color::DarkGray),
@@ -90,6 +96,7 @@ impl Theme {
             status_ok: Style::new().add_modifier(Modifier::BOLD),
             status_warn: Style::new().add_modifier(Modifier::BOLD),
             status_err: Style::new().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            alert: Style::new().add_modifier(Modifier::BOLD | Modifier::REVERSED),
             error_banner: Style::new().add_modifier(Modifier::BOLD | Modifier::REVERSED),
             restart_banner: Style::new().add_modifier(Modifier::BOLD),
             footer: Style::new().add_modifier(Modifier::DIM),
@@ -178,6 +185,8 @@ mod tests {
             headers: Vec::new(),
             insecure: false,
             no_color,
+            alert_5xx_pct: None,
+            alert_p95_ms: None,
         }
     }
 
@@ -206,6 +215,7 @@ mod tests {
             t.status_ok,
             t.status_warn,
             t.status_err,
+            t.alert,
             t.error_banner,
             t.restart_banner,
             t.footer,
@@ -261,6 +271,7 @@ mod tests {
             ("status_ok", t.status_ok),
             ("status_warn", t.status_warn),
             ("status_err", t.status_err),
+            ("alert", t.alert),
             ("error_banner", t.error_banner),
             ("restart_banner", t.restart_banner),
             ("footer", t.footer),
@@ -273,6 +284,23 @@ mod tests {
                 assert!(is_ansi16(c), "{name}.bg uses non-ANSI16 color: {c:?}");
             }
         }
+    }
+
+    #[test]
+    fn alert_style_is_reversed_and_distinct_from_status_err() {
+        // issue #47: アラート行は 5xx 行 (status_err) より目立つ reversed で強調する。
+        let c = Theme::color();
+        assert_eq!(c.alert.fg, Some(Color::Red));
+        assert!(c.alert.add_modifier.contains(Modifier::REVERSED));
+        assert!(
+            !c.status_err.add_modifier.contains(Modifier::REVERSED),
+            "color の status_err は reversed でないので alert と区別できること"
+        );
+        // mono は前景色を持たない (`mono_has_no_foreground_colors` で別途検証)。
+        assert!(Theme::mono()
+            .alert
+            .add_modifier
+            .contains(Modifier::REVERSED));
     }
 
     #[test]

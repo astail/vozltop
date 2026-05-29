@@ -49,7 +49,7 @@ use vozltop::cli::Args;
 use vozltop::client::{FetchError, VtsClient};
 use vozltop::event::{map_event, AppEvent};
 use vozltop::model::VtsStatus;
-use vozltop::state::App;
+use vozltop::state::{AlertConfig, App};
 use vozltop::terminal as term;
 use vozltop::theme::Theme;
 use vozltop::ui;
@@ -85,6 +85,7 @@ async fn run() -> Result<()> {
     let mut terminal =
         Terminal::new(CrosstermBackend::new(io::stdout())).wrap_err("failed to init ratatui")?;
     let mut app = App::with_theme(theme);
+    app.alerts = AlertConfig::from_args(&args);
 
     let loop_result = event_loop(&mut terminal, &mut app, client, interval_secs).await;
 
@@ -154,7 +155,13 @@ async fn event_loop(
             // fetch task の完了通知。
             Some(result) = fetch_rx.recv() => {
                 match result {
-                    Ok(status) => app.on_fetch_ok(status),
+                    Ok(status) => {
+                        app.on_fetch_ok(status);
+                        // アラート行が新たに出現したら端末ベルを 1 度鳴らす (issue #47)。
+                        if app.update_alert_active(ui::table::any_row_alerting(app)) {
+                            ring_bell();
+                        }
+                    }
                     Err(err) => app.on_fetch_err(&err),
                 }
             }
@@ -265,6 +272,17 @@ fn spawn_fetch(
         // recv 側が drop 済み (= ループが exit 中) なら send は失敗する。無視。
         let _ = tx.send(result).await;
     }));
+}
+
+/// 端末ベル (BEL = `\x07`) を 1 度鳴らす (issue #47)。
+///
+/// BEL は制御文字なので alternate screen のバッファ位置を動かさず、ratatui の
+/// 描画と干渉しない。出力失敗 (端末が消えた等) は致命的でないので無視する。
+fn ring_bell() {
+    use std::io::Write;
+    let mut out = io::stdout();
+    let _ = out.write_all(b"\x07");
+    let _ = out.flush();
 }
 
 /// SIGTERM を 1 度受けたら resolve する Future。
