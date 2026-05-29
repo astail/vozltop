@@ -251,12 +251,14 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::F(4) | KeyCode::Char('/') if !app.show_help && app.detail_zone.is_none() => {
             app.enter_filter();
         }
-        // F5: ソート方向反転 (#31)。
-        KeyCode::F(5) if !app.show_help => {
+        // F5: ソート方向反転 (#31)。help / detail が開いているときは無視する
+        // (モーダル優先。filter 入力と同じガード条件)。
+        KeyCode::F(5) if !app.show_help && app.detail_zone.is_none() => {
             app.toggle_sort_dir();
         }
-        // 数字キー 1-9: ソート列指定 (#31)。同じ列なら方向反転。
-        KeyCode::Char(c @ '1'..='9') if !app.show_help => {
+        // 数字キー 1-9: ソート列指定 (#31)。同じ列なら方向反転。help / detail が
+        // 開いているときは無視する (モーダル優先)。
+        KeyCode::Char(c @ '1'..='9') if !app.show_help && app.detail_zone.is_none() => {
             // '1'..='9' なので to_digit は必ず Some。
             if let Some(d) = c.to_digit(10) {
                 app.apply_sort_key(d as u8);
@@ -615,6 +617,30 @@ mod tests {
         app.show_help = true;
         handle_key(&mut app, press(KeyCode::F(4)));
         assert!(!app.filter_active, "filter not entered while help open");
+    }
+
+    #[test]
+    fn digit_keys_ignored_while_detail_open() {
+        // detail オーバーレイ表示中は裏のテーブルを並び替えない (filter と同じガード)。
+        let mut app = App::new();
+        app.detail_zone = Some("alpha".to_string());
+        handle_key(&mut app, press_char('3'));
+        assert_eq!(
+            app.sort.column, 1,
+            "sort unchanged (default RPS) while detail open"
+        );
+    }
+
+    #[test]
+    fn f5_ignored_while_detail_open() {
+        let mut app = App::new();
+        app.detail_zone = Some("alpha".to_string());
+        assert!(app.sort.descending);
+        handle_key(&mut app, press(KeyCode::F(5)));
+        assert!(
+            app.sort.descending,
+            "sort direction unchanged while detail open"
+        );
     }
 
     #[test]

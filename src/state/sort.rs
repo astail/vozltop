@@ -54,12 +54,13 @@ pub enum SortColumn {
 
 impl SortColumn {
     /// Server タブの 0-based 列 index → [`SortColumn`]。範囲外は ZONE に倒す
-    /// (ありえないが防御的; ソート側は無効列を RPS にフォールバックする)。
+    /// (`apply_sort_key` が範囲外キーを弾くため通常は到達しない防御的フォールバック)。
     pub fn server_at(column: u8) -> SortColumn {
         column_at(Tab::Server, column).unwrap_or(SortColumn::Zone)
     }
 
-    /// Upstream タブの 0-based 列 index → [`SortColumn`]。範囲外は ZONE。
+    /// Upstream タブの 0-based 列 index → [`SortColumn`]。範囲外は ZONE
+    /// (`server_at` と同じく防御的フォールバック)。
     pub fn upstream_at(column: u8) -> SortColumn {
         column_at(Tab::Upstream, column).unwrap_or(SortColumn::Zone)
     }

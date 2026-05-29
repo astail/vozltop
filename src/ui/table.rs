@@ -30,12 +30,17 @@
 //! 1 server = 1 行に展開する (CLAUDE.md「Upstream 行の粒度」)。group 集約は
 //! Phase 2 に倒す。
 //!
-//! ## デフォルトソート
+//! ## ソート (2 層構成)
 //!
-//! issue #28 受け入れ条件「RPS 降順」をハードコードする。issue #31 で
-//! `App::sort` を経由した動的ソートに置き換える予定。`SortState` への
-//! 切り替えはレンダ層だけの変更で済むよう、本ファイルの sort 呼び出し箇所を
-//! 1 ヶ所にまとめている (`sort_server_rows_default`)。
+//! `build_*_rows` は決定的なベース順 (Server/Upstream: RPS 降順、Cache: HIT%
+//! 降順、tie は ZONE 名昇順) を返す。HashMap 由来の非決定的順序を吸収し、build
+//! 出力を呼び出し側・テストから決定的に扱えるようにするための層
+//! (`sort_*_rows_default`)。
+//!
+//! Server / Upstream タブは render / `selected_zone` が `App::sort` を反映した
+//! 動的ソート (`sort_server_rows` / `sort_upstream_rows`) をこの上に重ねるため、
+//! 最終表示順はユーザー操作 (1-9 / F5) で決まる (issue #31)。Cache タブの動的
+//! ソートは未実装なので、`render_cache` は build のベース順をそのまま表示する。
 //!
 //! ## p95 表示
 //!
@@ -180,10 +185,10 @@ pub(crate) fn build_server_rows(
     rows
 }
 
-/// デフォルトソート (RPS 降順、tie は ZONE 名昇順)。
+/// build のベースソート (RPS 降順、tie は ZONE 名昇順)。
 ///
-/// issue #28 受け入れ条件。issue #31 で `App::sort` 経由の動的ソートに
-/// 差し替える予定。
+/// Server タブは render / `selected_zone` が `sort_server_rows` で `App::sort` を
+/// 反映するため、この順は最終表示には出ない。build 出力を決定的に保つための層。
 pub(crate) fn sort_server_rows_default(rows: &mut [ServerRow]) {
     rows.sort_by(|a, b| {
         b.rps
@@ -259,11 +264,11 @@ pub(crate) fn build_upstream_rows(
     rows
 }
 
-/// デフォルトソート (RPS 降順、tie は ZONE 名昇順)。
+/// build のベースソート (RPS 降順、tie は ZONE 名昇順)。
 ///
-/// Server タブ (`sort_server_rows_default`) と同じ規約。STATE 列ソートは
-/// issue #31 で `App::sort` 経由の動的ソート (`UpstreamState::sort_rank`) に
-/// 差し替える予定。
+/// Server タブ (`sort_server_rows_default`) と同じ規約・役割。STATE 列を含む
+/// 動的ソートは render / `selected_zone` が `sort_upstream_rows` で `App::sort`
+/// を反映してこの上に重ねる (issue #31)。
 pub(crate) fn sort_upstream_rows_default(rows: &mut [UpstreamRow]) {
     rows.sort_by(|a, b| {
         b.rps
@@ -338,8 +343,9 @@ pub(crate) fn sort_server_rows(rows: &mut [ServerRow], sort: SortState) {
             SortColumn::P95 => cmp_p95(&a.p95, &b.p95, desc),
             SortColumn::InPerSec => cmp_f64(a.bw_in_per_sec, b.bw_in_per_sec, desc),
             SortColumn::OutPerSec => cmp_f64(a.bw_out_per_sec, b.bw_out_per_sec, desc),
-            // Server タブに無い列 (STATE / Cache 系): RPS 降順にフォールバック。
-            _ => cmp_f64(a.rps, b.rps, true),
+            // Server タブに無い列 (STATE / Cache 系)。`server_at` が範囲外を ZONE に
+            // 倒すため実際には到達しないが、網羅性のため ZONE 名で安定ソートする。
+            _ => cmp_str(&a.zone, &b.zone, desc),
         };
         primary.then_with(|| a.zone.cmp(&b.zone))
     });
@@ -367,8 +373,9 @@ pub(crate) fn sort_upstream_rows(rows: &mut [UpstreamRow], sort: SortState) {
                     ord
                 }
             }
-            // Upstream タブに無い列 (Cache 系): RPS 降順にフォールバック。
-            _ => cmp_f64(a.rps, b.rps, true),
+            // Upstream タブに無い列 (Cache 系)。`upstream_at` が範囲外を ZONE に
+            // 倒すため実際には到達しないが、網羅性のため ZONE 名で安定ソートする。
+            _ => cmp_str(&a.zone, &b.zone, desc),
         };
         primary.then_with(|| a.zone.cmp(&b.zone))
     });
@@ -508,10 +515,11 @@ pub(crate) fn build_cache_rows(
     rows
 }
 
-/// デフォルトソート (HIT% 降順、`None` (分母 0) は末尾、tie は ZONE 名昇順)。
+/// Cache タブの表示ソート (HIT% 降順、`None` (分母 0) は末尾、tie は ZONE 名昇順)。
 ///
-/// issue #30 受け入れ条件。issue #31 で `App::sort` 経由の動的ソートに
-/// 差し替える予定。
+/// issue #30 受け入れ条件。Cache タブの動的ソート (`App::sort` 反映) は未実装の
+/// ため、`render_cache` は本関数の順をそのまま表示する (Server/Upstream のような
+/// 上位の `sort_*_rows` 再ソートが無い唯一のタブ)。
 pub(crate) fn sort_cache_rows_default(rows: &mut [CacheRow]) {
     rows.sort_by(|a, b| {
         match (a.hit_pct, b.hit_pct) {
