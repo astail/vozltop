@@ -59,7 +59,7 @@ use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState};
 use ratatui::Frame;
 
 use crate::model::{Responses, ServerZone, UpstreamServer, VtsStatus};
-use crate::state::{percentile, App, PercentileResult, Tab};
+use crate::state::{percentile, AlertConfig, App, PercentileResult, Tab};
 use crate::ui::header::format_bps;
 
 /// 8 列ヘッダ。`ui::table::tests::*` から覗くことを想定して pub const にしてある。
@@ -575,6 +575,70 @@ pub fn selected_zone(app: &App) -> Option<String> {
     Some(rows[idx].zone.clone())
 }
 
+// ---------- アラート判定 (issue #47) ----------
+
+/// `PercentileResult` から閾値比較に使う ms 値を取り出す。
+///
+/// `Value` / `Average` (histogram なし fallback) はその ms、`Overflow(max)` は
+/// p95 が最終 bucket 境界を超えている = 少なくとも `max` ms なので `max`。
+/// `NoData` は判定不能なので `None`。
+fn p95_ms_value(p: PercentileResult) -> Option<f64> {
+    match p {
+        PercentileResult::Value(ms) | PercentileResult::Average(ms) => Some(ms),
+        PercentileResult::Overflow(max) => Some(max as f64),
+        PercentileResult::NoData => None,
+    }
+}
+
+/// 行が `cfg` のいずれかの閾値以上か (= アラート対象か)。
+///
+/// 5xx% / p95(ms) のいずれかが閾値以上なら `true`。閾値未設定 (`None`) の指標と
+/// 値が取れない指標 (ratio が `None` / p95 が `NoData`) は判定に寄与しない。
+pub(crate) fn row_is_alerting(
+    r5xx_pct: Option<f64>,
+    p95: PercentileResult,
+    cfg: &AlertConfig,
+) -> bool {
+    if let (Some(thr), Some(v)) = (cfg.max_5xx_pct, r5xx_pct) {
+        if v >= thr {
+            return true;
+        }
+    }
+    if let (Some(thr), Some(ms)) = (cfg.max_p95_ms, p95_ms_value(p95)) {
+        if ms >= thr as f64 {
+            return true;
+        }
+    }
+    false
+}
+
+/// 最新 snapshot で Server / Upstream のいずれかにアラート行があるか。
+///
+/// ベル発火 (`main.rs`) の判定に使う。閾値未設定なら常に `false`。現在の
+/// `active_tab` に関わらず両タブを評価する (別タブを見ていてもアラートを
+/// 取りこぼさないため)。Cache タブは 5xx / p95 を持たないので対象外。
+pub fn any_row_alerting(app: &App) -> bool {
+    if !app.alerts.is_enabled() {
+        return false;
+    }
+    let Some(now) = app.history.latest() else {
+        return false;
+    };
+    let prev = app.history.previous();
+    let dt_secs = match prev {
+        Some(p) => (now.status.now_msec.saturating_sub(p.status.now_msec) as f64) / 1000.0,
+        None => 0.0,
+    };
+    let prev_status = prev.map(|p| &p.status);
+    let server = build_server_rows(&now.status, prev_status, dt_secs)
+        .iter()
+        .any(|r| row_is_alerting(r.r5xx_pct, r.p95, &app.alerts));
+    let upstream = build_upstream_rows(&now.status, prev_status, dt_secs)
+        .iter()
+        .any(|r| row_is_alerting(r.r5xx_pct, r.p95, &app.alerts));
+    server || upstream
+}
+
 // ---------- render ----------
 
 /// 現在の `active_tab` に応じて Server / Upstream / Cache を描画する。
@@ -623,8 +687,10 @@ fn render_server(f: &mut Frame<'_>, app: &App, area: Rect) {
     let body_rows: Vec<Row> = rows
         .iter()
         .map(|r| {
-            // 5xx% が非ゼロなら警告色で行頭から強調する。
-            let row_style = if r.r5xx_pct.is_some_and(|p| p > 0.0) {
+            // アラート閾値超過 (issue #47) を最優先で強調し、次点で 5xx% 非ゼロ。
+            let row_style = if row_is_alerting(r.r5xx_pct, r.p95, &app.alerts) {
+                app.theme.alert
+            } else if r.r5xx_pct.is_some_and(|p| p > 0.0) {
                 app.theme.status_err
             } else {
                 Style::default()
@@ -715,10 +781,12 @@ fn render_upstream(f: &mut Frame<'_>, app: &App, area: Rect) {
     let body_rows: Vec<Row> = rows
         .iter()
         .map(|r| {
-            // 行全体の強調: 5xx% が非ゼロ ならエラー色。STATE 自体の強調は
-            // STATE セル単位で行う (down/backup の行の他の列を赤一色にすると
-            // 数値の読み取り性が落ちる)。
-            let row_style = if r.r5xx_pct.is_some_and(|p| p > 0.0) {
+            // 行全体の強調: アラート閾値超過 (issue #47) を最優先、次点で 5xx%
+            // 非ゼロ。STATE 自体の強調は STATE セル単位で行う (down/backup の行の
+            // 他の列を赤一色にすると数値の読み取り性が落ちる)。
+            let row_style = if row_is_alerting(r.r5xx_pct, r.p95, &app.alerts) {
+                app.theme.alert
+            } else if r.r5xx_pct.is_some_and(|p| p > 0.0) {
                 app.theme.status_err
             } else {
                 Style::default()
@@ -1152,6 +1220,165 @@ mod tests {
             &[("alpha", 0, 0, 0, 0, (0, 0, 0, 0, 0), None)],
         ));
         let _ = draw(&app, 120, 40);
+    }
+
+    // ---------- アラート判定 (issue #47) ----------
+
+    #[test]
+    fn row_is_alerting_on_5xx_threshold() {
+        let cfg = AlertConfig {
+            max_5xx_pct: Some(1.0),
+            max_p95_ms: None,
+        };
+        assert!(row_is_alerting(Some(1.0), PercentileResult::NoData, &cfg)); // 境界 (==)
+        assert!(row_is_alerting(Some(5.0), PercentileResult::NoData, &cfg));
+        assert!(!row_is_alerting(Some(0.5), PercentileResult::NoData, &cfg));
+        // ratio 不明 (None) は判定に寄与しない
+        assert!(!row_is_alerting(None, PercentileResult::NoData, &cfg));
+    }
+
+    #[test]
+    fn row_is_alerting_on_p95_threshold() {
+        let cfg = AlertConfig {
+            max_5xx_pct: None,
+            max_p95_ms: Some(500),
+        };
+        assert!(row_is_alerting(None, PercentileResult::Value(500.0), &cfg)); // 境界
+        assert!(row_is_alerting(
+            None,
+            PercentileResult::Average(600.0),
+            &cfg
+        )); // histogram なし
+        assert!(row_is_alerting(None, PercentileResult::Overflow(500), &cfg)); // 最終 bucket 超
+        assert!(!row_is_alerting(None, PercentileResult::Value(499.0), &cfg));
+        // NoData は判定不能
+        assert!(!row_is_alerting(None, PercentileResult::NoData, &cfg));
+    }
+
+    #[test]
+    fn row_is_alerting_either_metric_triggers() {
+        let cfg = AlertConfig {
+            max_5xx_pct: Some(1.0),
+            max_p95_ms: Some(500),
+        };
+        assert!(row_is_alerting(
+            Some(2.0),
+            PercentileResult::Value(10.0),
+            &cfg
+        )); // 5xx のみ
+        assert!(row_is_alerting(
+            Some(0.0),
+            PercentileResult::Value(800.0),
+            &cfg
+        )); // p95 のみ
+        assert!(!row_is_alerting(
+            Some(0.0),
+            PercentileResult::Value(10.0),
+            &cfg
+        )); // どちらも未満
+    }
+
+    #[test]
+    fn row_is_alerting_disabled_config_never_alerts() {
+        let cfg = AlertConfig::default();
+        assert!(!row_is_alerting(
+            Some(100.0),
+            PercentileResult::Value(9999.0),
+            &cfg
+        ));
+    }
+
+    #[test]
+    fn any_row_alerting_detects_server_5xx_and_respects_threshold() {
+        // 差分 5xx=100 / total=100 → 5xx=100% の zone。
+        let prev = status_with_zones(1000, &[("z", 100, 0, 0, 0, (0, 100, 0, 0, 0), None)]);
+        let now = status_with_zones(2000, &[("z", 200, 0, 0, 0, (0, 100, 0, 0, 100), None)]);
+        let mut app = App::new();
+        app.on_fetch_ok(prev);
+        app.on_fetch_ok(now);
+
+        app.alerts = AlertConfig {
+            max_5xx_pct: Some(50.0),
+            max_p95_ms: None,
+        };
+        assert!(any_row_alerting(&app));
+
+        // 閾値を 100% 超に上げると検知しない
+        app.alerts = AlertConfig {
+            max_5xx_pct: Some(101.0),
+            max_p95_ms: None,
+        };
+        assert!(!any_row_alerting(&app));
+
+        // 無効化すると常に false
+        app.alerts = AlertConfig::default();
+        assert!(!any_row_alerting(&app));
+    }
+
+    #[test]
+    fn any_row_alerting_false_without_snapshot() {
+        let mut app = App::new();
+        app.alerts = AlertConfig {
+            max_5xx_pct: Some(0.0),
+            max_p95_ms: None,
+        };
+        assert!(!any_row_alerting(&app));
+    }
+
+    #[test]
+    fn render_applies_alert_style_to_breaching_row() {
+        use ratatui::style::{Color, Modifier};
+        // aaa: 高 RPS で clean (RPS 降順ソートで row0 = cursor)。
+        // zzz: 低 RPS だが 5xx=100% (row1 = 非カーソル行) でアラート。
+        let prev = status_with_zones(
+            1000,
+            &[
+                ("aaa", 0, 0, 0, 0, (0, 100, 0, 0, 0), None),
+                ("zzz", 0, 0, 0, 0, (0, 0, 0, 0, 0), None),
+            ],
+        );
+        let now = status_with_zones(
+            2000,
+            &[
+                ("aaa", 1000, 0, 0, 0, (0, 200, 0, 0, 0), None),
+                ("zzz", 10, 0, 0, 0, (0, 0, 0, 0, 100), None),
+            ],
+        );
+        let mut app = App::new();
+        app.on_fetch_ok(prev);
+        app.on_fetch_ok(now);
+        app.alerts = AlertConfig {
+            max_5xx_pct: Some(50.0),
+            max_p95_ms: None,
+        };
+
+        let render_at = |app: &App| {
+            let backend = TestBackend::new(80, 5);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|f| render(f, app, f.area())).unwrap();
+            terminal.backend().buffer().clone()
+        };
+
+        // body row1 = buffer y=2 (y0 header, y1 aaa=cursor, y2 zzz)。
+        let buf = render_at(&app);
+        let alert_cell = buf[(0, 2)].style();
+        assert!(
+            alert_cell.add_modifier.contains(Modifier::REVERSED),
+            "アラート行は alert style (reversed) で強調される: {alert_cell:?}"
+        );
+        assert_eq!(alert_cell.fg, Some(Color::Red));
+
+        // 閾値無効時は同じ 5xx 行が status_err (reversed でない) になる。
+        app.alerts = AlertConfig::default();
+        let buf2 = render_at(&app);
+        assert!(
+            !buf2[(0, 2)]
+                .style()
+                .add_modifier
+                .contains(Modifier::REVERSED),
+            "アラート無効時は reversed にならない: {:?}",
+            buf2[(0, 2)].style()
+        );
     }
 
     // ========== Upstream タブ (issue #29) ==========

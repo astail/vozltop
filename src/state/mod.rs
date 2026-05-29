@@ -17,6 +17,7 @@
 use std::cell::Cell;
 use std::time::Instant;
 
+use crate::cli::Args;
 use crate::client::FetchError;
 use crate::model::VtsStatus;
 use crate::theme::Theme;
@@ -62,6 +63,34 @@ impl Default for SortState {
             column: 0,
             descending: true,
         }
+    }
+}
+
+/// アラート閾値 (issue #47)。`--alert-5xx-pct` / `--alert-p95-ms` から確定する。
+///
+/// いずれかの閾値以上の指標を持つ行を `ui::table` がハイライトし、新たにアラート
+/// 行が出現した瞬間に `main.rs` が端末ベルを 1 度鳴らす。閾値未設定 (`None`) の
+/// 指標は判定に寄与しない。TOML 設定との統合は issue #46 に委ねる。
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct AlertConfig {
+    /// 5xx 率 (%) の上限。これ以上でアラート。
+    pub max_5xx_pct: Option<f64>,
+    /// p95 レイテンシ (ms) の上限。これ以上でアラート。
+    pub max_p95_ms: Option<u64>,
+}
+
+impl AlertConfig {
+    /// `Args` から確定する (theme と同じ `from_args` 規約)。
+    pub fn from_args(args: &Args) -> Self {
+        Self {
+            max_5xx_pct: args.alert_5xx_pct,
+            max_p95_ms: args.alert_p95_ms,
+        }
+    }
+
+    /// いずれかの閾値が設定されていれば `true` (= アラート判定を行う)。
+    pub fn is_enabled(&self) -> bool {
+        self.max_5xx_pct.is_some() || self.max_p95_ms.is_some()
     }
 }
 
@@ -160,6 +189,12 @@ pub struct App {
     /// 閉じる。詳細オーバーレイ (`detail_zone`) や filter / sort 状態とは
     /// 独立に扱う (互いを排他しない)。
     pub show_help: bool,
+    /// アラート閾値 (issue #47)。`main.rs` 起動時に `AlertConfig::from_args` で
+    /// 確定する。`App::new()` / `with_theme` 経由では無効 (`Default` = 全 `None`)。
+    pub alerts: AlertConfig,
+    /// 直近の fetch 時点で「アラート行が 1 つ以上あったか」。ベルを rising edge
+    /// (false→true) でのみ鳴らすための状態。`update_alert_active` が更新する。
+    pub alert_active: bool,
 }
 
 impl Default for App {
@@ -192,6 +227,8 @@ impl App {
             // no-op にならないよう、画面の半分弱に相当する 10 行を仮置きする。
             page_size: Cell::new(10),
             show_help: false,
+            alerts: AlertConfig::default(),
+            alert_active: false,
         }
     }
 
@@ -219,6 +256,17 @@ impl App {
         let step = self.page_size.get().max(1);
         let max = self.visible_rows.get().saturating_sub(1);
         self.cursor = self.cursor.saturating_add(step).min(max);
+    }
+
+    /// アラート状態を更新し、rising edge (`false`→`true`) なら `true` を返す。
+    ///
+    /// `main.rs` が fetch 成功ごとに「現在アラート行があるか」を渡して呼ぶ。
+    /// 戻り値が `true` のときだけ端末ベルを鳴らすことで、アラートが継続している
+    /// 間に毎秒鳴り続けるのを防ぐ (アラートが一度解消して再発したら再び鳴る)。
+    pub fn update_alert_active(&mut self, alerting: bool) -> bool {
+        let rising = alerting && !self.alert_active;
+        self.alert_active = alerting;
+        rising
     }
 
     /// バナー描画用の文字列を返す。mono 時のみ `[!] ` プレフィックスを付与する
@@ -547,6 +595,43 @@ mod tests {
         assert!(!app.history.nginx_restart_detected());
         app.on_fetch_ok(ok_status(500));
         assert!(app.history.nginx_restart_detected());
+    }
+
+    // ---------- issue #47: アラート閾値 ----------
+
+    #[test]
+    fn alert_config_is_enabled_only_when_a_threshold_is_set() {
+        assert!(!AlertConfig::default().is_enabled());
+        assert!(AlertConfig {
+            max_5xx_pct: Some(1.0),
+            max_p95_ms: None,
+        }
+        .is_enabled());
+        assert!(AlertConfig {
+            max_5xx_pct: None,
+            max_p95_ms: Some(500),
+        }
+        .is_enabled());
+    }
+
+    #[test]
+    fn new_app_has_alerts_disabled() {
+        let app = App::new();
+        assert!(!app.alerts.is_enabled());
+        assert!(!app.alert_active);
+    }
+
+    #[test]
+    fn update_alert_active_rings_only_on_rising_edge() {
+        let mut app = App::new();
+        // false → true: rising edge なので鳴らす
+        assert!(app.update_alert_active(true));
+        // true → true: 継続中は鳴らさない
+        assert!(!app.update_alert_active(true));
+        // true → false: 解消 (鳴らさない)
+        assert!(!app.update_alert_active(false));
+        // false → true: 再発で再び鳴らす
+        assert!(app.update_alert_active(true));
     }
 
     #[test]

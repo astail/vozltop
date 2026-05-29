@@ -47,6 +47,8 @@ fn args_for(url: Url) -> Args {
         headers: Vec::new(),
         insecure: false,
         no_color: true,
+        alert_5xx_pct: None,
+        alert_p95_ms: None,
     }
 }
 

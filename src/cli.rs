@@ -95,6 +95,14 @@ pub struct Args {
     /// 色を無効化する (環境変数 `NO_COLOR` でも同等)。
     #[arg(long = "no-color")]
     pub no_color: bool,
+
+    /// 行の 5xx 率がこの % 以上ならアラート表示 (ハイライト + ベル)。範囲 0..=100。
+    #[arg(long = "alert-5xx-pct", value_name = "PCT", value_parser = parse_alert_pct)]
+    pub alert_5xx_pct: Option<f64>,
+
+    /// 行の p95 レイテンシがこの ms 以上ならアラート表示 (ハイライト + ベル)。
+    #[arg(long = "alert-p95-ms", value_name = "MS")]
+    pub alert_p95_ms: Option<u64>,
 }
 
 impl Args {
@@ -253,6 +261,17 @@ pub fn parse_interval(s: &str) -> Result<f64, String> {
     if !(MIN_INTERVAL_SECS..=MAX_INTERVAL_SECS).contains(&v) {
         return Err(format!(
             "interval must be between {MIN_INTERVAL_SECS} and {MAX_INTERVAL_SECS} seconds (got {v})"
+        ));
+    }
+    Ok(v)
+}
+
+/// `--alert-5xx-pct` の値パーサ。0..=100 の有限な % のみ受理する。
+pub fn parse_alert_pct(s: &str) -> Result<f64, String> {
+    let v: f64 = s.parse().map_err(|_| format!("`{s}` is not a number"))?;
+    if !v.is_finite() || !(0.0..=100.0).contains(&v) {
+        return Err(format!(
+            "--alert-5xx-pct must be between 0 and 100 (got {s:?})"
         ));
     }
     Ok(v)
@@ -548,6 +567,60 @@ mod tests {
         assert!(a.no_color);
     }
 
+    // ---------- issue #47: alert 閾値フラグ ----------
+
+    #[test]
+    fn args_alert_flags_default_to_none() {
+        let a = try_parse(&["vozltop", "http://x/s"]).unwrap();
+        assert_eq!(a.alert_5xx_pct, None);
+        assert_eq!(a.alert_p95_ms, None);
+    }
+
+    #[test]
+    fn args_parses_alert_flags() {
+        let a = try_parse(&[
+            "vozltop",
+            "http://x/s",
+            "--alert-5xx-pct",
+            "1.5",
+            "--alert-p95-ms",
+            "500",
+        ])
+        .unwrap();
+        assert_eq!(a.alert_5xx_pct, Some(1.5));
+        assert_eq!(a.alert_p95_ms, Some(500));
+    }
+
+    #[test]
+    fn parse_alert_pct_accepts_boundaries() {
+        assert_eq!(parse_alert_pct("0").unwrap(), 0.0);
+        assert_eq!(parse_alert_pct("100").unwrap(), 100.0);
+        assert_eq!(parse_alert_pct("0.5").unwrap(), 0.5);
+    }
+
+    #[test]
+    fn parse_alert_pct_rejects_out_of_range_and_nonfinite() {
+        assert!(parse_alert_pct("-0.1").is_err());
+        assert!(parse_alert_pct("100.1").is_err());
+        assert!(parse_alert_pct("NaN").is_err());
+        assert!(parse_alert_pct("abc").is_err());
+    }
+
+    #[test]
+    fn args_rejects_out_of_range_alert_pct_at_clap_layer() {
+        let err = try_parse(&["vozltop", "http://x/s", "--alert-5xx-pct", "150"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn args_rejects_non_integer_alert_p95_ms_at_clap_layer() {
+        // u64 パーサが小数 / 非数値を弾く (負値は clap が先頭 `-` を別フラグ扱いするため別系統)。
+        let err = try_parse(&["vozltop", "http://x/s", "--alert-p95-ms", "1.5"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+        let err = try_parse(&["vozltop", "http://x/s", "--alert-p95-ms", "abc"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
     #[test]
     fn args_rejects_invalid_url() {
         // url::Url::from_str はスキーマ無しを弾く
@@ -590,6 +663,8 @@ mod tests {
             headers: Vec::new(),
             insecure: false,
             no_color: flag,
+            alert_5xx_pct: None,
+            alert_p95_ms: None,
         }
     }
 
