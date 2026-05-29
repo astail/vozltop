@@ -176,6 +176,40 @@ fn buckets_round_trips_u64() {
 }
 
 #[test]
+fn decodes_filter_zones() {
+    // filterZones は `group -> key -> ServerZone` の 2 段ネスト (issue #45)。
+    // initial.json / after_traffic.json に `country::*` グループ (US / JP) を
+    // 追加してある。各 key は serverZones と同形の stats を持つ。
+    let status = load("after_traffic.json");
+
+    assert_eq!(status.filter_zones.len(), 1);
+    let country = status
+        .filter_zones
+        .get("country::*")
+        .expect("country::* filter group present");
+    assert_eq!(country.len(), 2);
+
+    let us = country.get("US").expect("US filter key present");
+    assert_eq!(us.request_counter, 2_010);
+    assert_eq!(us.responses.r2xx, 2_008);
+    assert_eq!(us.responses.r5xx, 1);
+    // filter key の stats は serverZones と同じく requestBuckets を持つ (空配列)。
+    assert_empty_buckets(&us.request_buckets, "country::*/US");
+
+    let jp = country.get("JP").expect("JP filter key present");
+    assert_eq!(jp.request_counter, 1_001);
+    assert_eq!(jp.responses.r5xx, 2);
+}
+
+#[test]
+fn filter_zones_absent_decodes_to_empty_map() {
+    // filterZones を持たない (= filter 未設定の nginx) fixture でも
+    // `#[serde(default)]` で空 map になり decode が落ちないこと。
+    let status = load("no_histogram.json");
+    assert!(status.filter_zones.is_empty());
+}
+
+#[test]
 fn upstream_servers_decode_as_vec() {
     // upstreamZones は HashMap<String, Vec<UpstreamServer>> 構造であることを確認
     let status = load("no_histogram.json");

@@ -65,6 +65,13 @@ impl SortColumn {
         column_at(Tab::Upstream, column).unwrap_or(SortColumn::Zone)
     }
 
+    /// Filter タブの 0-based 列 index → [`SortColumn`]。filterZones の各 key は
+    /// serverZones と同形なので列構成は Server と同一。範囲外は ZONE
+    /// (`server_at` と同じく防御的フォールバック)。
+    pub fn filter_at(column: u8) -> SortColumn {
+        column_at(Tab::Filter, column).unwrap_or(SortColumn::Zone)
+    }
+
     /// footer / help 表示用の列名。`ui::table::SERVER_HEADERS` 等のヘッダ文字列と
     /// 一致させる (ユーザーが画面上のヘッダと footer の対応を取れるように)。
     pub fn label(self) -> &'static str {
@@ -127,12 +134,17 @@ pub const CACHE_COLUMNS: [SortColumn; 8] = [
     SortColumn::OutPerSec,
 ];
 
+/// Filter タブの 0-based 列 index → [`SortColumn`] (8 列)。filterZones の各 key は
+/// serverZones と同形 (`group/key` 表記) なので列構成は Server タブと同一。
+pub const FILTER_COLUMNS: [SortColumn; 8] = SERVER_COLUMNS;
+
 /// 指定タブの列マッピングテーブルを返す。
 pub fn columns(tab: Tab) -> &'static [SortColumn] {
     match tab {
         Tab::Server => &SERVER_COLUMNS,
         Tab::Upstream => &UPSTREAM_COLUMNS,
         Tab::Cache => &CACHE_COLUMNS,
+        Tab::Filter => &FILTER_COLUMNS,
     }
 }
 
@@ -205,11 +217,22 @@ mod tests {
         assert_eq!(columns(Tab::Server).len(), 8);
         assert_eq!(columns(Tab::Upstream).len(), 9);
         assert_eq!(columns(Tab::Cache).len(), 8);
+        assert_eq!(columns(Tab::Filter).len(), 8);
+    }
+
+    #[test]
+    fn filter_key_mapping_matches_server() {
+        // Filter タブは filterZones の各 key が serverZones と同形なので
+        // 列構成 (= 数字キーマッピング) は Server と完全に一致する。
+        for idx in 0..8 {
+            assert_eq!(column_at(Tab::Filter, idx), column_at(Tab::Server, idx));
+        }
+        assert_eq!(column_at(Tab::Filter, 8), None);
     }
 
     #[test]
     fn column_label_for_zero_is_zone_all_tabs() {
-        for tab in [Tab::Server, Tab::Upstream, Tab::Cache] {
+        for tab in [Tab::Server, Tab::Upstream, Tab::Cache, Tab::Filter] {
             assert_eq!(column_label(tab, 0), "ZONE");
         }
     }

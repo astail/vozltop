@@ -83,6 +83,12 @@ pub const CACHE_HEADERS: [&str; 8] = [
     "ZONE", "HIT%", "MISS", "EXPIRED", "STALE", "USED", "IN/s", "OUT/s",
 ];
 
+/// 8 列ヘッダ (Filter タブ)。filterZones の各 key は serverZones と同形の
+/// stats を持つため、列構成は Server タブと同一 (ZONE 列のみ `group/key` 表記)。
+pub const FILTER_HEADERS: [&str; 8] = [
+    "ZONE", "RPS", "2xx%", "4xx%", "5xx%", "p95", "IN/s", "OUT/s",
+];
+
 /// Upstream server の状態。`down` / `backup` / `up` の 3 値。
 ///
 /// VTS JSON では `down: bool` と `backup: bool` の独立フラグで持つが、表示・
@@ -534,6 +540,108 @@ pub(crate) fn sort_cache_rows_default(rows: &mut [CacheRow]) {
     });
 }
 
+/// Filter タブ 1 行ぶんの確定済み描画データ。
+///
+/// filterZones は `group -> key -> stats` の 2 段ネストを 1 key = 1 行に展開し、
+/// ZONE 列に `"group/key"` を入れる (CLAUDE.md「Upstream 行の粒度」と同じ
+/// nested data の規約)。stats は serverZones と同形なので [`ServerRow`] と同じ
+/// 列を持つ。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct FilterRow {
+    pub zone: String,
+    pub rps: f64,
+    pub r2xx_pct: Option<f64>,
+    pub r4xx_pct: Option<f64>,
+    pub r5xx_pct: Option<f64>,
+    pub p95: PercentileResult,
+    pub bw_in_per_sec: f64,
+    pub bw_out_per_sec: f64,
+}
+
+/// `now` (最新 snapshot) と `prev` (前 snapshot)、`dt_secs` (経過秒) から
+/// Filter タブの行を組み立てる。
+///
+/// `filter_zones: HashMap<group, HashMap<key, ServerZone>>` を 1 key = 1 行に
+/// 展開し、ZONE 列に `"group/key"` を入れる。差分計算は Server タブと完全に
+/// 同じ (各 key の stats が `ServerZone` なので `compute_ratios` / `compute_p95`
+/// をそのまま使う)。
+pub(crate) fn build_filter_rows(
+    now: &VtsStatus,
+    prev: Option<&VtsStatus>,
+    dt_secs: f64,
+) -> Vec<FilterRow> {
+    let dt_ok = dt_secs > 0.0;
+    let mut rows: Vec<FilterRow> = Vec::new();
+    for (group, keys) in &now.filter_zones {
+        let prev_group = prev.and_then(|p| p.filter_zones.get(group));
+        for (key, zone) in keys {
+            let prev_zone = prev_group.and_then(|g| g.get(key));
+            let rps = per_sec(
+                prev_zone.map(|z| z.request_counter),
+                zone.request_counter,
+                dt_secs,
+            );
+            let bw_in = per_sec(prev_zone.map(|z| z.in_bytes), zone.in_bytes, dt_secs);
+            let bw_out = per_sec(prev_zone.map(|z| z.out_bytes), zone.out_bytes, dt_secs);
+            let (r2, r4, r5) = if dt_ok {
+                compute_ratios(prev_zone, zone)
+            } else {
+                (None, None, None)
+            };
+            let p95 = compute_p95(prev_zone, zone);
+            rows.push(FilterRow {
+                zone: format!("{group}/{key}"),
+                rps,
+                r2xx_pct: r2,
+                r4xx_pct: r4,
+                r5xx_pct: r5,
+                p95,
+                bw_in_per_sec: bw_in,
+                bw_out_per_sec: bw_out,
+            });
+        }
+    }
+    sort_filter_rows_default(&mut rows);
+    rows
+}
+
+/// デフォルトソート (RPS 降順、tie は ZONE 名昇順)。Server タブと同じ規約。
+///
+/// Filter タブは render / `selected_zone` が `sort_filter_rows` で `App::sort` を
+/// 反映するため、この順は最終表示には出ない。build 出力を決定的に保つための層。
+pub(crate) fn sort_filter_rows_default(rows: &mut [FilterRow]) {
+    rows.sort_by(|a, b| {
+        b.rps
+            .partial_cmp(&a.rps)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| a.zone.cmp(&b.zone))
+    });
+}
+
+/// Filter 行を `SortState` に従って in-place ソートする。tie は ZONE 名昇順。
+/// 列構成は Server と同一なので `sort_server_rows` と同じ列分岐を使う
+/// (#31 のソート機構に Filter タブを接続する)。
+pub(crate) fn sort_filter_rows(rows: &mut [FilterRow], sort: SortState) {
+    let col = SortColumn::filter_at(sort.column);
+    let desc = sort.descending;
+    rows.sort_by(|a, b| {
+        let primary = match col {
+            SortColumn::Zone => cmp_str(&a.zone, &b.zone, desc),
+            SortColumn::Rps => cmp_f64(a.rps, b.rps, desc),
+            SortColumn::R2xx => cmp_opt_f64(a.r2xx_pct, b.r2xx_pct, desc),
+            SortColumn::R4xx => cmp_opt_f64(a.r4xx_pct, b.r4xx_pct, desc),
+            SortColumn::R5xx => cmp_opt_f64(a.r5xx_pct, b.r5xx_pct, desc),
+            SortColumn::P95 => cmp_p95(&a.p95, &b.p95, desc),
+            SortColumn::InPerSec => cmp_f64(a.bw_in_per_sec, b.bw_in_per_sec, desc),
+            SortColumn::OutPerSec => cmp_f64(a.bw_out_per_sec, b.bw_out_per_sec, desc),
+            // Filter タブに無い列 (STATE / Cache 系)。`filter_at` が範囲外を ZONE に
+            // 倒すため実際には到達しないが、網羅性のため ZONE 名で安定ソートする。
+            _ => cmp_str(&a.zone, &b.zone, desc),
+        };
+        primary.then_with(|| a.zone.cmp(&b.zone))
+    });
+}
+
 /// cache zone の hit 率 (パーセント)。分母は
 /// `hit + miss + bypass + expired + stale + updating + revalidated + scarce`。
 /// 分母 0 (まだキャッシュ系応答が無い) なら `None`。
@@ -704,6 +812,13 @@ pub fn selected_zone(app: &App) -> Option<String> {
             let idx = app.cursor.min(rows.len().checked_sub(1)?);
             Some(rows[idx].zone.clone())
         }
+        Tab::Filter => {
+            let mut rows = build_filter_rows(&now.status, prev_status, dt_secs);
+            retain_matching(&mut rows, &app.filter, |r| r.zone.as_str());
+            sort_filter_rows(&mut rows, app.sort);
+            let idx = app.cursor.min(rows.len().checked_sub(1)?);
+            Some(rows[idx].zone.clone())
+        }
         // Cache タブは issue #30 待ち。
         Tab::Cache => None,
     }
@@ -746,11 +861,12 @@ pub(crate) fn row_is_alerting(
     false
 }
 
-/// 最新 snapshot で Server / Upstream のいずれかにアラート行があるか。
+/// 最新 snapshot で Server / Upstream / Filter のいずれかにアラート行があるか。
 ///
 /// ベル発火 (`main.rs`) の判定に使う。閾値未設定なら常に `false`。現在の
-/// `active_tab` に関わらず両タブを評価する (別タブを見ていてもアラートを
-/// 取りこぼさないため)。Cache タブは 5xx / p95 を持たないので対象外。
+/// `active_tab` に関わらず全タブを評価する (別タブを見ていてもアラートを
+/// 取りこぼさないため)。Filter タブの各 key は serverZones と同形で 5xx / p95 を
+/// 持つので対象に含める。Cache タブは 5xx / p95 を持たないので対象外。
 pub fn any_row_alerting(app: &App) -> bool {
     if !app.alerts.is_enabled() {
         return false;
@@ -770,7 +886,10 @@ pub fn any_row_alerting(app: &App) -> bool {
     let upstream = build_upstream_rows(&now.status, prev_status, dt_secs)
         .iter()
         .any(|r| row_is_alerting(r.r5xx_pct, r.p95, &app.alerts));
-    server || upstream
+    let filter = build_filter_rows(&now.status, prev_status, dt_secs)
+        .iter()
+        .any(|r| row_is_alerting(r.r5xx_pct, r.p95, &app.alerts));
+    server || upstream || filter
 }
 
 // ---------- render ----------
@@ -785,6 +904,7 @@ pub fn render(f: &mut Frame<'_>, app: &App, area: Rect) {
         Tab::Server => render_server(f, app, area),
         Tab::Upstream => render_upstream(f, app, area),
         Tab::Cache => render_cache(f, app, area),
+        Tab::Filter => render_filter(f, app, area),
     }
 }
 
@@ -1040,6 +1160,97 @@ fn render_cache(f: &mut Frame<'_>, app: &App, area: Rect) {
         Constraint::Length(9),  // EXPIRED
         Constraint::Length(8),  // STALE
         Constraint::Length(22), // USED ("1.2 GB / 4.0 GB (30%)")
+        Constraint::Length(10), // IN/s
+        Constraint::Length(10), // OUT/s
+    ];
+    let row_count = body_rows.len();
+
+    let table = Table::new(body_rows, widths)
+        .header(header)
+        .row_highlight_style(app.theme.row_selected);
+
+    let mut state = TableState::default();
+    let clamped = if row_count == 0 {
+        None
+    } else {
+        Some(app.cursor.min(row_count - 1))
+    };
+    state.select(clamped);
+
+    f.render_stateful_widget(table, area, &mut state);
+
+    app.visible_rows.set(row_count);
+    app.page_size
+        .set(area.height.saturating_sub(1).max(1) as usize);
+}
+
+/// Filter タブを `area` に描画する。
+///
+/// 副作用は `render_server` と同じ (`app.visible_rows` / `app.page_size`)。
+/// 列構成は Server タブと同一で、ZONE 列のみ `"group/key"` 表記。
+fn render_filter(f: &mut Frame<'_>, app: &App, area: Rect) {
+    let latest = app.history.latest();
+
+    let Some(now) = latest else {
+        let p = Paragraph::new(Line::from(Span::styled(
+            "waiting for first VTS snapshot…",
+            Style::default().add_modifier(Modifier::DIM),
+        )));
+        f.render_widget(p, area);
+        app.visible_rows.set(0);
+        app.page_size
+            .set(area.height.saturating_sub(1).max(1) as usize);
+        return;
+    };
+
+    let prev = app.history.previous();
+    let dt_secs = match prev {
+        Some(p) => {
+            let dt_ms = now.status.now_msec.saturating_sub(p.status.now_msec) as f64;
+            dt_ms / 1000.0
+        }
+        None => 0.0,
+    };
+    let mut rows = build_filter_rows(&now.status, prev.map(|p| &p.status), dt_secs);
+    retain_matching(&mut rows, &app.filter, |r| r.zone.as_str());
+    sort_filter_rows(&mut rows, app.sort);
+
+    let header =
+        Row::new(FILTER_HEADERS.iter().map(|h| Cell::from(*h))).style(app.theme.table_header);
+
+    let body_rows: Vec<Row> = rows
+        .iter()
+        .map(|r| {
+            // アラート閾値超過 (issue #47) を最優先で強調し、次点で 5xx% 非ゼロ。
+            // 列構成が Server と同形なので Server タブと同じ規約で判定する。
+            let row_style = if row_is_alerting(r.r5xx_pct, r.p95, &app.alerts) {
+                app.theme.alert
+            } else if r.r5xx_pct.is_some_and(|p| p > 0.0) {
+                app.theme.status_err
+            } else {
+                Style::default()
+            };
+            Row::new(vec![
+                Cell::from(r.zone.clone()),
+                Cell::from(format_rps(r.rps)),
+                Cell::from(format_ratio(r.r2xx_pct)),
+                Cell::from(format_ratio(r.r4xx_pct)),
+                Cell::from(format_ratio(r.r5xx_pct)),
+                Cell::from(format_p95(r.p95)),
+                Cell::from(format_bps(r.bw_in_per_sec.round() as u64)),
+                Cell::from(format_bps(r.bw_out_per_sec.round() as u64)),
+            ])
+            .style(row_style)
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Min(10),    // ZONE (可変、"group/key" を表示)
+        Constraint::Length(8),  // RPS
+        Constraint::Length(7),  // 2xx%
+        Constraint::Length(7),  // 4xx%
+        Constraint::Length(7),  // 5xx%
+        Constraint::Length(8),  // p95
         Constraint::Length(10), // IN/s
         Constraint::Length(10), // OUT/s
     ];
@@ -2433,5 +2644,289 @@ mod tests {
             &[("demo_cache", 8_388_608, 4096, 0, 0, 100, 0, 0, 0)],
         ));
         let _ = draw_cache(&mut app, 80, 24);
+    }
+
+    // ========== Filter タブ (issue #45) ==========
+
+    /// filter key 1 つぶんのテスト定義 (clippy::type-complexity 回避)。
+    /// `(group, key, request_counter, in_bytes, out_bytes, request_msec,
+    /// (1xx,2xx,3xx,4xx,5xx), Some((msecs,counters)) or None)`。serverZones と
+    /// 同形なので server 用 ZoneSpec とほぼ同じ構成。
+    type FilterSpec<'a> = (
+        &'a str,
+        &'a str,
+        u64,
+        u64,
+        u64,
+        u64,
+        (u64, u64, u64, u64, u64),
+        Option<(Vec<u64>, Vec<u64>)>,
+    );
+
+    /// `filterZones` 入りの VtsStatus を作る。key は group ごとに集約される
+    /// (キー順は BTreeMap で安定)。
+    fn status_with_filters(now_msec: u64, keys: &[FilterSpec<'_>]) -> VtsStatus {
+        use std::collections::BTreeMap;
+        let mut groups: BTreeMap<String, serde_json::Map<String, serde_json::Value>> =
+            BTreeMap::new();
+        for (group, key, rc, ib, ob, rms, (r1, r2, r3, r4, r5), buckets) in keys {
+            let buckets_json = match buckets {
+                Some((msecs, counters)) => serde_json::json!({
+                    "msecs": msecs,
+                    "counters": counters,
+                }),
+                None => serde_json::json!({ "msecs": [], "counters": [] }),
+            };
+            let v = serde_json::json!({
+                "requestCounter": rc,
+                "inBytes": ib,
+                "outBytes": ob,
+                "responses": {
+                    "1xx": r1, "2xx": r2, "3xx": r3, "4xx": r4, "5xx": r5,
+                    "miss": 0, "bypass": 0, "expired": 0, "stale": 0,
+                    "updating": 0, "revalidated": 0, "hit": 0, "scarce": 0,
+                },
+                "requestMsec": rms,
+                "requestMsecCounter": 0,
+                "requestBuckets": buckets_json,
+            });
+            groups
+                .entry((*group).to_string())
+                .or_default()
+                .insert((*key).to_string(), v);
+        }
+        let filter_zones: serde_json::Map<String, serde_json::Value> = groups
+            .into_iter()
+            .map(|(k, m)| (k, serde_json::Value::Object(m)))
+            .collect();
+        let raw = serde_json::json!({
+            "hostName": "h", "nginxVersion": "1", "moduleVersion": "v",
+            "loadMsec": 0u64, "nowMsec": now_msec,
+            "connections": {
+                "active": 0, "reading": 0, "writing": 0,
+                "waiting": 0, "accepted": 0, "handled": 0, "requests": 0
+            },
+            "filterZones": serde_json::Value::Object(filter_zones),
+        });
+        serde_json::from_value(raw).unwrap()
+    }
+
+    /// `active_tab = Filter` に切り替えて描画した結果を文字列で返す。
+    fn draw_filter(app: &mut App, w: u16, h: u16) -> String {
+        app.active_tab = Tab::Filter;
+        draw(app, w, h)
+    }
+
+    #[test]
+    fn build_filter_rows_zone_is_group_slash_key() {
+        let s = status_with_filters(
+            1000,
+            &[
+                ("country::*", "US", 0, 0, 0, 0, (0, 0, 0, 0, 0), None),
+                ("country::*", "JP", 0, 0, 0, 0, (0, 0, 0, 0, 0), None),
+            ],
+        );
+        let rows = build_filter_rows(&s, None, 0.0);
+        let zones: Vec<&str> = rows.iter().map(|r| r.zone.as_str()).collect();
+        assert!(zones.contains(&"country::*/US"), "zones: {zones:?}");
+        assert!(zones.contains(&"country::*/JP"), "zones: {zones:?}");
+    }
+
+    #[test]
+    fn build_filter_rows_no_prev_returns_zero_rps() {
+        let s = status_with_filters(
+            1000,
+            &[("country::*", "US", 0, 0, 0, 42, (0, 0, 0, 0, 0), None)],
+        );
+        let rows = build_filter_rows(&s, None, 0.0);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].rps, 0.0);
+        // histogram 無し key は average_fallback で値を返す
+        assert!(matches!(rows[0].p95, PercentileResult::Average(v) if (v - 42.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn build_filter_rows_computes_rps_and_ratios_from_diff() {
+        let prev = status_with_filters(
+            1000,
+            &[("country::*", "US", 100, 0, 0, 0, (0, 80, 0, 10, 10), None)],
+        );
+        let now = status_with_filters(
+            2000,
+            &[(
+                "country::*",
+                "US",
+                200,
+                1024,
+                4096,
+                0,
+                (0, 180, 0, 10, 10),
+                None,
+            )],
+        );
+        let rows = build_filter_rows(&now, Some(&prev), 1.0);
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert!((r.rps - 100.0).abs() < 1e-9, "rps = {}", r.rps);
+        // 差分: 2xx=100, total=100 → 2xx=100%
+        assert!((r.r2xx_pct.unwrap() - 100.0).abs() < 1e-9);
+        assert_eq!(r.r4xx_pct, Some(0.0));
+        assert_eq!(r.r5xx_pct, Some(0.0));
+        assert!((r.bw_in_per_sec - 1024.0).abs() < 1e-9);
+        assert!((r.bw_out_per_sec - 4096.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn build_filter_rows_default_sort_is_rps_desc_with_zone_tiebreak() {
+        let now = status_with_filters(
+            2000,
+            &[
+                ("country::*", "alpha", 100, 0, 0, 0, (0, 90, 0, 5, 5), None),
+                (
+                    "country::*",
+                    "beta",
+                    1000,
+                    0,
+                    0,
+                    0,
+                    (0, 1000, 0, 0, 0),
+                    None,
+                ),
+                ("country::*", "gamma", 100, 0, 0, 0, (0, 90, 0, 5, 5), None),
+            ],
+        );
+        let prev = status_with_filters(
+            1000,
+            &[
+                ("country::*", "alpha", 50, 0, 0, 0, (0, 45, 0, 3, 2), None),
+                ("country::*", "beta", 500, 0, 0, 0, (0, 500, 0, 0, 0), None),
+                ("country::*", "gamma", 50, 0, 0, 0, (0, 45, 0, 3, 2), None),
+            ],
+        );
+        let rows = build_filter_rows(&now, Some(&prev), 1.0);
+        // 期待順: beta (500 rps) → alpha (50 rps, tie で zone alphabetical) → gamma
+        assert_eq!(rows[0].zone, "country::*/beta");
+        assert_eq!(rows[1].zone, "country::*/alpha");
+        assert_eq!(rows[2].zone, "country::*/gamma");
+    }
+
+    #[test]
+    fn render_filter_shows_headers_and_group_slash_key() {
+        let mut app = App::new();
+        app.on_fetch_ok(status_with_filters(
+            2000,
+            &[("country::*", "US", 100, 0, 0, 50, (0, 100, 0, 0, 0), None)],
+        ));
+        let out = draw_filter(&mut app, 100, 5);
+        for h in &FILTER_HEADERS {
+            assert!(out.contains(h), "header {h} missing in:\n{out}");
+        }
+        assert!(out.contains("country::*/US"), "out:\n{out}");
+        // histogram 無し key は ~Nms (Average) 表示
+        assert!(out.contains("~50ms"), "out:\n{out}");
+    }
+
+    #[test]
+    fn render_filter_with_no_snapshot_shows_placeholder() {
+        let mut app = App::new();
+        app.active_tab = Tab::Filter;
+        let out = draw(&app, 80, 3);
+        assert!(
+            out.contains("waiting for first VTS snapshot"),
+            "out:\n{out}"
+        );
+    }
+
+    #[test]
+    fn filter_fits_in_80x24() {
+        let mut app = App::new();
+        app.on_fetch_ok(status_with_filters(
+            2000,
+            &[("country::*", "US", 0, 0, 0, 0, (0, 0, 0, 0, 0), None)],
+        ));
+        let _ = draw_filter(&mut app, 80, 24);
+    }
+
+    #[test]
+    fn sort_filter_rows_honors_sort_state_like_server() {
+        // Filter タブが #31 のソート機構に接続されていること: 列構成は Server と
+        // 同一なので、ZONE 昇順 (col 0, asc) で並べ替えできる。
+        let now = status_with_filters(
+            2000,
+            &[
+                (
+                    "country::*",
+                    "beta",
+                    1000,
+                    0,
+                    0,
+                    0,
+                    (0, 1000, 0, 0, 0),
+                    None,
+                ),
+                ("country::*", "alpha", 10, 0, 0, 0, (0, 10, 0, 0, 0), None),
+                ("country::*", "gamma", 100, 0, 0, 0, (0, 100, 0, 0, 0), None),
+            ],
+        );
+        let mut rows = build_filter_rows(&now, None, 0.0);
+        sort_filter_rows(
+            &mut rows,
+            SortState {
+                column: 0, // ZONE
+                descending: false,
+            },
+        );
+        let zones: Vec<&str> = rows.iter().map(|r| r.zone.as_str()).collect();
+        assert_eq!(
+            zones,
+            vec!["country::*/alpha", "country::*/beta", "country::*/gamma"]
+        );
+    }
+
+    #[test]
+    fn render_filter_applies_name_filter_and_sort() {
+        // F4/`/` の name フィルタと 1-9/F5 のソートが Filter タブにも効くこと。
+        let mut app = App::new();
+        app.on_fetch_ok(status_with_filters(
+            2000,
+            &[
+                ("country::*", "US", 0, 0, 0, 0, (0, 0, 0, 0, 0), None),
+                ("method::*", "GET", 0, 0, 0, 0, (0, 0, 0, 0, 0), None),
+            ],
+        ));
+        app.active_tab = Tab::Filter;
+        // ZONE 昇順 + "method" で絞り込む。
+        app.sort = SortState {
+            column: 0,
+            descending: false,
+        };
+        app.filter = "method".to_string();
+        let out = draw(&app, 100, 6);
+        assert!(out.contains("method::*/GET"), "out:\n{out}");
+        assert!(!out.contains("country::*/US"), "filtered out:\n{out}");
+        // フィルタ適用後の可視行数が 1 行 (cursor 上限算出に使う副作用)。
+        assert_eq!(app.visible_rows.get(), 1);
+    }
+
+    #[test]
+    fn selected_zone_filter_tab_respects_filter_and_cursor() {
+        let mut app = App::new();
+        app.on_fetch_ok(status_with_filters(
+            2000,
+            &[
+                ("country::*", "US", 0, 0, 0, 0, (0, 0, 0, 0, 0), None),
+                ("country::*", "JP", 0, 0, 0, 0, (0, 0, 0, 0, 0), None),
+                ("method::*", "GET", 0, 0, 0, 0, (0, 0, 0, 0, 0), None),
+            ],
+        ));
+        app.active_tab = Tab::Filter;
+        app.sort = SortState {
+            column: 0, // ZONE 昇順で決定的に
+            descending: false,
+        };
+        app.filter = "country".to_string();
+        // 絞り込み後の並びは "country::*/JP", "country::*/US"。cursor=1 → US。
+        app.cursor = 1;
+        assert_eq!(selected_zone(&app).as_deref(), Some("country::*/US"));
     }
 }

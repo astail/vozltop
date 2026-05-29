@@ -24,7 +24,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{BarChart, Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
-use crate::model::{Buckets, Responses, UpstreamServer, VtsStatus};
+use crate::model::{Buckets, Responses, ServerZone, UpstreamServer, VtsStatus};
 use crate::state::{percentile, App, PercentileResult, Tab};
 
 /// 詳細オーバーレイで描画する 3 段ぶんの素材。
@@ -94,6 +94,11 @@ pub fn build_detail(app: &App) -> Option<DetailView> {
             prev.map(|p| &p.status),
         )),
         Tab::Cache => Some(build_cache_detail(zone_name, &now.status)),
+        Tab::Filter => Some(build_filter_detail(
+            zone_name,
+            &now.status,
+            prev.map(|p| &p.status),
+        )),
     }
 }
 
@@ -198,6 +203,51 @@ fn build_cache_detail(name: &str, now: &VtsStatus) -> DetailView {
         histogram: None,
         responses,
     }
+}
+
+fn build_filter_detail(name: &str, now: &VtsStatus, prev: Option<&VtsStatus>) -> DetailView {
+    // detail_zone は table と同じく "group/key" 形式 (issue #45)。先頭の '/' で
+    // 分割する。filter key 側に '/' は来ない前提 ($geoip_country_code 等)。
+    let empty = DetailView {
+        zone: name.to_string(),
+        percentiles: PercentileTriple {
+            p50: PercentileResult::NoData,
+            p95: PercentileResult::NoData,
+            p99: PercentileResult::NoData,
+        },
+        histogram: None,
+        responses: Vec::new(),
+    };
+    let Some((group, key)) = name.split_once('/') else {
+        return empty;
+    };
+
+    let now_zone = find_filter(now, group, key);
+    let prev_zone = prev.and_then(|p| find_filter(p, group, key));
+
+    let (percentiles, histogram) = match now_zone {
+        Some(z) => percentiles_and_bars_request(
+            z.request_buckets.as_ref(),
+            prev_zone.and_then(|pz| pz.request_buckets.as_ref()),
+            z.request_msec,
+        ),
+        None => return empty,
+    };
+
+    let responses = now_zone
+        .map(|z| http_response_breakdown(&z.responses))
+        .unwrap_or_default();
+
+    DetailView {
+        zone: name.to_string(),
+        percentiles,
+        histogram,
+        responses,
+    }
+}
+
+fn find_filter<'a>(s: &'a VtsStatus, group: &str, key: &str) -> Option<&'a ServerZone> {
+    s.filter_zones.get(group).and_then(|keys| keys.get(key))
 }
 
 fn find_upstream<'a>(s: &'a VtsStatus, group: &str, server: &str) -> Option<&'a UpstreamServer> {
@@ -822,5 +872,66 @@ mod tests {
         assert_eq!(compute_bar_width(3, 5), 1);
         // 0 本のとき panic しない
         assert_eq!(compute_bar_width(10, 0), 1);
+    }
+
+    // ---------- filter detail (issue #45) ----------
+
+    /// `filterZones["country::*"]["US"]` 1 件だけ持つ VtsStatus を作る。
+    fn status_with_filter_zone(now_msec: u64, rms: u64, r2: u64) -> VtsStatus {
+        let raw = serde_json::json!({
+            "hostName": "h", "nginxVersion": "1", "moduleVersion": "v",
+            "loadMsec": 0u64, "nowMsec": now_msec,
+            "connections": {
+                "active": 0, "reading": 0, "writing": 0,
+                "waiting": 0, "accepted": 0, "handled": 0, "requests": 0
+            },
+            "filterZones": {
+                "country::*": {
+                    "US": {
+                        "requestCounter": 0, "inBytes": 0, "outBytes": 0,
+                        "responses": {
+                            "1xx": 0, "2xx": r2, "3xx": 0, "4xx": 0, "5xx": 0,
+                            "miss": 0, "bypass": 0, "expired": 0, "stale": 0,
+                            "updating": 0, "revalidated": 0, "hit": 0, "scarce": 0,
+                        },
+                        "requestMsec": rms, "requestMsecCounter": 0,
+                        "requestBuckets": { "msecs": [], "counters": [] },
+                    }
+                }
+            },
+        });
+        serde_json::from_value(raw).unwrap()
+    }
+
+    #[test]
+    fn filter_detail_resolves_group_slash_key() {
+        let s = status_with_filter_zone(1000, 33, 5);
+        let mut app = App::new();
+        app.active_tab = Tab::Filter;
+        app.on_fetch_ok(s);
+        app.detail_zone = Some("country::*/US".into());
+
+        let v = build_detail(&app).expect("detail");
+        assert_eq!(v.zone, "country::*/US");
+        // histogram なし key は Average fallback
+        assert!(
+            matches!(v.percentiles.p50, PercentileResult::Average(x) if (x - 33.0).abs() < 1e-9)
+        );
+        assert!(v.histogram.is_none());
+        assert!(v.responses.contains(&("2xx", 5)));
+    }
+
+    #[test]
+    fn filter_detail_missing_key_returns_empty_view() {
+        let s = status_with_filter_zone(1000, 0, 0);
+        let mut app = App::new();
+        app.active_tab = Tab::Filter;
+        app.on_fetch_ok(s);
+        app.detail_zone = Some("country::*/ZZ".into());
+
+        let v = build_detail(&app).expect("detail (key absent → empty)");
+        assert!(matches!(v.percentiles.p50, PercentileResult::NoData));
+        assert!(v.histogram.is_none());
+        assert!(v.responses.is_empty());
     }
 }

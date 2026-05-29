@@ -1,0 +1,28 @@
+---
+source: tests/ui_snapshots.rs
+expression: render_to_string(&app)
+---
+"Conn         0/1           active 0  reading 0  writing 0  waiting 0            "
+"RPS                                                    0/s          5xx —       "
+"in                          0 B/s       out                         0 B/s       "
+"waiting for first VTS snapshot…                                                 "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"F1Help F4Filter F5Sort F10Quit  Tab:Zone Enter    Sort: RPS ↓                   "
