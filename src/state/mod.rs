@@ -47,6 +47,7 @@ pub enum Tab {
     Server,
     Upstream,
     Cache,
+    Filter,
 }
 
 /// ソート列 / 方向。`column` のセマンティクスはタブごとに異なる (詳細は

@@ -8,8 +8,8 @@
 //!
 //! ## カバレッジ
 //!
-//! - 4 状態 (`Connecting` / `Running` / `Stale` / `Disconnected`) × 3 タブ
-//!   (`Server` / `Upstream` / `Cache`) = 12 枚
+//! - 4 状態 (`Connecting` / `Running` / `Stale` / `Disconnected`) × 4 タブ
+//!   (`Server` / `Upstream` / `Cache` / `Filter`) = 16 枚
 //! - 詳細オーバーレイ (Server zone) 1 枚
 //! - help モーダル 1 枚
 //!
@@ -65,6 +65,7 @@ fn snapshot_each_tab(prefix: &str, mk: impl Fn() -> App) {
         (Tab::Server, "server"),
         (Tab::Upstream, "upstream"),
         (Tab::Cache, "cache"),
+        (Tab::Filter, "filter"),
     ] {
         let mut app = mk();
         app.active_tab = tab;

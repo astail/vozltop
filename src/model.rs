@@ -29,6 +29,16 @@ pub struct VtsStatus {
     pub upstream_zones: HashMap<String, Vec<UpstreamServer>>,
     #[serde(default)]
     pub cache_zones: HashMap<String, CacheZone>,
+    /// `vhost_traffic_status_filter_by_set_key` で設定したカスタム集計。
+    ///
+    /// JSON は `filterZones -> <filterGroup> -> <filterKey> -> stats` の 2 段
+    /// ネスト。各 key の stats オブジェクトは `serverZones` の値と同形なので
+    /// [`ServerZone`] を再利用する (実 vts 出力で `requestCounter` / `inBytes` /
+    /// `outBytes` / `responses` / `requestMsec` / `requestBuckets` を持つことを
+    /// 確認済み。issue #45)。filter 未設定の nginx では省略されるため
+    /// `#[serde(default)]`。
+    #[serde(default)]
+    pub filter_zones: HashMap<String, HashMap<String, ServerZone>>,
     #[serde(default)]
     pub shared_zones: SharedZones,
 }

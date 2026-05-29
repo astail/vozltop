@@ -33,7 +33,7 @@ const HELP_ROWS: &[(&str, &str)] = &[
     ("F1 / ?", "open or close this help"),
     (
         "Tab / S-Tab",
-        "switch zone type (Server / Upstream / Cache)",
+        "switch zone type (Server / Upstream / Cache / Filter)",
     ),
     ("Up / Down", "move row cursor (also: k / j)"),
     ("PgUp / PgDn", "page up / down"),
@@ -96,10 +96,12 @@ fn help_block() -> Paragraph<'static> {
 /// 空行+注記 2 行 = 13 行、余白を入れて 16 行)。フレームが小さい場合は
 /// `min(frame_size, target_size)` でクランプする。
 fn centered_rect(frame: Rect) -> Rect {
-    // 幅 70: 80 桁ターミナル前提で内側 68 桁 (border 2 を差し引く)。
-    // 18 桁の key 列 + 最長 description "switch zone type (Server / Upstream / Cache)"
-    // (43 桁) が 1 行に収まる必要があるため、60 では不足し 70 でちょうど余裕がある。
-    const TARGET_WIDTH: u16 = 70;
+    // 幅 74: 80 桁ターミナル前提で内側 72 桁 (border 2 を差し引く)。
+    // 18 桁の key 列 + 最長 description
+    // "switch zone type (Server / Upstream / Cache / Filter)" (53 桁) が 1 行に
+    // 収まる必要があるため、合計 71 桁。70 では右端で truncate するので 74 にする
+    // (issue #45 で Filter タブを追加した際に description が伸びた)。
+    const TARGET_WIDTH: u16 = 74;
     const TARGET_HEIGHT: u16 = 16;
 
     let width = TARGET_WIDTH.min(frame.width);
@@ -166,6 +168,7 @@ mod tests {
         assert!(out.contains("Server"), "out:\n{out}");
         assert!(out.contains("Upstream"), "out:\n{out}");
         assert!(out.contains("Cache"), "out:\n{out}");
+        assert!(out.contains("Filter"), "out:\n{out}");
     }
 
     #[test]
@@ -202,7 +205,7 @@ mod tests {
     fn centered_rect_picks_target_size_when_frame_is_large() {
         let frame = Rect::new(0, 0, 200, 50);
         let center = centered_rect(frame);
-        assert_eq!(center.width, 70);
+        assert_eq!(center.width, 74);
         assert_eq!(center.height, 16);
     }
 }

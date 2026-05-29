@@ -177,7 +177,7 @@ mod tests {
             column: 0,
             descending: true,
         };
-        for tab in [Tab::Server, Tab::Upstream, Tab::Cache] {
+        for tab in [Tab::Server, Tab::Upstream, Tab::Cache, Tab::Filter] {
             app.active_tab = tab;
             assert_eq!(sort_label(&app), "Sort: ZONE ↓");
         }

@@ -1,0 +1,28 @@
+---
+source: tests/ui_snapshots.rs
+expression: render_to_string(&app)
+---
+"[Disconnected]  consecutive failures: 5                                         "
+"Conn ████████1/1 ████████  active 1  reading 0  writing 1  waiting 0            "
+"RPS                                                    0/s          5xx 0.00%   "
+"in                          0 B/s       out                         0 B/s       "
+"ZONE             RPS      2xx%    4xx%    5xx%    p95      IN/s       OUT/s     "
+"country::*/US    120      99.9%   0.0%    0.0%    ~0ms     9.9 KB/s   19.9 KB/s "
+"country::*/JP    59.9     99.7%   0.1%    0.2%    ~0ms     4.9 KB/s   9.9 KB/s  "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"HTTP 500 Internal Server Error                                                  "
+"F1Help F4Filter F5Sort F10Quit  Tab:Zone Enter    Sort: RPS ↓                   "

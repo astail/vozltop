@@ -22,6 +22,13 @@ nginx.conf を使って下記手順を踏み、ホスト名や IP に個人情�
 `serverZones` の `api.example.test` / `web.example.test` は RFC 6761 で予約された
 `.test` TLD を使った合成名で、実在ホストではない。
 
+`initial.json` / `after_traffic.json` には Filter タブ (issue #45) 用に
+`filterZones` (`vhost_traffic_status_filter_by_set_key` 由来) の代表ブロックを
+追加してある。`country::*` グループに `US` / `JP` の 2 key を持ち、各 key の stats
+は `serverZones` と同形 (VTS の実スキーマ準拠)。Docker から再取得する際は
+`vhost_traffic_status_filter_by_set_key $geoip_country_code country::*;` 等を
+nginx.conf に足したうえで撮り直すこと (現状の `setup/` の conf は filter 未設定)。
+
 ## 取得手順
 
 ### 1. フィクスチャ用イメージをビルド
