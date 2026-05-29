@@ -53,7 +53,9 @@ pub enum Tab {
 /// docs/DESIGN.md)。issue #28 で実装を埋める。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SortState {
-    /// 0-based 列 index。デフォルトは 0 (= ZONE 列)。
+    /// 0-based 列 index。デフォルトは 1 (Server/Upstream タブの RPS 列、
+    /// Cache タブの HIT% 列)。DESIGN.md「RPS 降順」に合わせ、起動直後は
+    /// 「忙しい zone が上」になるようにする。
     pub column: u8,
     /// `true` = 降順。
     pub descending: bool,
@@ -62,7 +64,7 @@ pub struct SortState {
 impl Default for SortState {
     fn default() -> Self {
         Self {
-            column: 0,
+            column: 1,
             descending: true,
         }
     }
@@ -432,7 +434,7 @@ mod tests {
         assert!(matches!(app.status, AppStatus::Connecting));
         assert!(app.history.is_empty());
         assert_eq!(app.active_tab, Tab::Server);
-        assert_eq!(app.sort.column, 0);
+        assert_eq!(app.sort.column, 1);
         assert!(app.sort.descending);
         assert!(app.filter.is_empty());
         assert_eq!(app.cursor, 0);
@@ -708,20 +710,21 @@ mod tests {
     #[test]
     fn apply_sort_key_switches_column_and_resets_to_descending() {
         let mut app = App::new();
-        // Server タブ。key 2 = RPS (column index 1)。
-        app.apply_sort_key(2);
-        assert_eq!(app.sort.column, 1);
+        // default は col 1 (RPS) なので、別列 key 3 = 2xx% (column index 2) に切替。
+        app.apply_sort_key(3);
+        assert_eq!(app.sort.column, 2);
         assert!(app.sort.descending, "new column defaults to descending");
     }
 
     #[test]
     fn apply_sort_key_same_column_toggles_direction() {
         let mut app = App::new();
-        app.apply_sort_key(2); // RPS desc
+        // default (col 1) と別の列を選んでから同キー連打で toggle を見る。
+        app.apply_sort_key(3); // col 2 を選択 (desc)
         assert!(app.sort.descending);
-        app.apply_sort_key(2); // same column → toggle
+        app.apply_sort_key(3); // same column → toggle
         assert!(!app.sort.descending, "repeat key toggles to ascending");
-        app.apply_sort_key(2);
+        app.apply_sort_key(3);
         assert!(app.sort.descending, "third press toggles back");
     }
 
@@ -738,7 +741,10 @@ mod tests {
         let mut app = App::new();
         // Server タブは 8 列 (key 1-8)。key 9 (STATE) は Server に無い → no-op。
         app.apply_sort_key(9);
-        assert_eq!(app.sort.column, 0, "out-of-range key is ignored");
+        assert_eq!(
+            app.sort.column, 1,
+            "out-of-range key is ignored (default RPS)"
+        );
         assert!(app.sort.descending);
 
         // Upstream タブなら key 9 = STATE が有効。
@@ -751,7 +757,7 @@ mod tests {
     fn apply_sort_key_zero_is_noop() {
         let mut app = App::new();
         app.apply_sort_key(0);
-        assert_eq!(app.sort.column, 0);
+        assert_eq!(app.sort.column, 1, "default RPS column unchanged");
         assert!(app.sort.descending);
     }
 

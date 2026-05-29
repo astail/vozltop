@@ -25,4 +25,4 @@ expression: render_to_string(&app)
 "                                                                                "
 "                                                                                "
 "HTTP 500 Internal Server Error                                                  "
-"F1Help F4Filter F5Sort F10Quit  Tab:Zone Enter    Sort: ZONE ↓                  "
+"F1Help F4Filter F5Sort F10Quit  Tab:Zone Enter    Sort: RPS ↓                   "

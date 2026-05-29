@@ -493,17 +493,19 @@ mod tests {
     #[test]
     fn digit_key_sets_sort_column() {
         let mut app = App::new();
-        handle_key(&mut app, press_char('2')); // Server col 1 = RPS
-        assert_eq!(app.sort.column, 1);
+        // default は col 1 (RPS) なので別列 key 3 = 2xx% (col index 2) で選択を見る。
+        handle_key(&mut app, press_char('3'));
+        assert_eq!(app.sort.column, 2);
         assert!(app.sort.descending);
     }
 
     #[test]
     fn same_digit_key_toggles_direction() {
         let mut app = App::new();
-        handle_key(&mut app, press_char('2'));
+        // default (col 1) と別の列を選んでから同キー連打で toggle を見る。
+        handle_key(&mut app, press_char('3'));
         assert!(app.sort.descending);
-        handle_key(&mut app, press_char('2'));
+        handle_key(&mut app, press_char('3'));
         assert!(!app.sort.descending, "second press toggles to ascending");
     }
 
@@ -600,8 +602,11 @@ mod tests {
     fn digit_keys_ignored_while_help_open() {
         let mut app = App::new();
         app.show_help = true;
-        handle_key(&mut app, press_char('2'));
-        assert_eq!(app.sort.column, 0, "sort unchanged while help open");
+        handle_key(&mut app, press_char('3'));
+        assert_eq!(
+            app.sort.column, 1,
+            "sort unchanged (default RPS) while help open"
+        );
     }
 
     #[test]

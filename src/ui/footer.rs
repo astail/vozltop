@@ -129,7 +129,8 @@ mod tests {
     #[test]
     fn sort_label_shows_descending_arrow_by_default() {
         let app = App::new();
-        assert_eq!(sort_label(&app), "Sort: ZONE ↓");
+        // default は RPS 降順 (Server タブ col 1)。
+        assert_eq!(sort_label(&app), "Sort: RPS ↓");
     }
 
     #[test]
