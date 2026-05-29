@@ -108,7 +108,7 @@ footer に `closes #N` / `fixes #N` / `resolves #N` を書いておくと、merg
 | Integration (derived) | `tests/derived.rs` | RPS / p95 / hit% の計算が fixture と一致 |
 | UI snapshot | `insta` (`tests/ui_snapshots.rs`) | 4 状態 × 3 タブ + 詳細/help オーバーレイの描画差分 (#35) |
 
-CI は `cargo test` / `cargo clippy -D warnings` / `cargo fmt --check` を ubuntu / macos の両 OS で実行します。Windows 対応は v1 スコープ外です。
+CI は `cargo test` / `cargo clippy -D warnings` / `cargo fmt --check` を ubuntu / macos の両 OS で実行し、加えて `insta snapshots` ジョブ (ubuntu) が `cargo insta test --check` で未承認 snapshot を弾きます (issue #10)。Windows 対応は v1 スコープ外です。
 
 ### UI snapshot (insta) の更新手順
 
@@ -129,8 +129,9 @@ cargo test --test ui_snapshots          # 差分があると *.snap.new が出�
 cargo insta accept                       # もしくは *.snap.new を確認の上 *.snap へ
 ```
 
-- **`*.snap.new` を残したままコミット/マージしない** (受け入れ条件)。`cargo test` が `.snap`
-  との不一致で fail するため、CI が検出します。
+- **`*.snap.new` を残したままコミット/マージしない** (受け入れ条件)。ローカルの `cargo test` が
+  `.snap` との不一致で fail するのに加え、CI の `insta snapshots` ジョブが `cargo insta test --check`
+  で pending snapshot を弾くため、未承認のまま merge できません (issue #10)。
 - snapshot は色/スタイルを含まずシンボルのみなので、`--no-color` 等の theme 変更では差分は出ません。
 - 意図しない描画差分が出た場合は実装側の回帰を疑ってください (snapshot を盲目的に accept しない)。
 

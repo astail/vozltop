@@ -53,6 +53,25 @@ jobs:
       - name: cargo test
         run: cargo test --all-features --locked
 
+  snapshots:
+    name: insta snapshots
+    runs-on: ubuntu-latest
+    # UI snapshot (insta) に未承認の pending (.snap.new) が残っていないことを保証する (issue #10)。
+    # cargo test も差分で fail するが、--check は .snap.new を書かずに pending を弾く。
+    # snapshot はシンボルのみで OS 非依存なので ubuntu 単発で十分。
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+          save-if: false
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-insta
+      - name: cargo insta test --check
+        run: cargo insta test --check
+
   deny:
     name: cargo deny
     runs-on: ubuntu-latest
