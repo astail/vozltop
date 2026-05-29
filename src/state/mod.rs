@@ -25,12 +25,14 @@ use crate::theme::Theme;
 pub mod derived;
 pub mod history;
 pub mod percentile;
+pub mod sort;
 
 pub use derived::{
     compute, CacheDerived, DerivedSnapshot, ServerDerived, StatusRatios, UpstreamDerived, ZoneRates,
 };
 pub use history::{History, Snapshot, HISTORY_CAPACITY};
 pub use percentile::{average_fallback, compare_for_sort, percentile, PercentileResult};
+pub use sort::{column_at, column_label, SortColumn};
 
 /// `Stale` → `Disconnected` に escalate する連続失敗回数の閾値。
 ///
@@ -51,7 +53,9 @@ pub enum Tab {
 /// docs/DESIGN.md)。issue #28 で実装を埋める。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SortState {
-    /// 0-based 列 index。デフォルトは 0 (= ZONE 列)。
+    /// 0-based 列 index。デフォルトは 1 (Server/Upstream タブの RPS 列、
+    /// Cache タブの HIT% 列)。DESIGN.md「RPS 降順」に合わせ、起動直後は
+    /// 「忙しい zone が上」になるようにする。
     pub column: u8,
     /// `true` = 降順。
     pub descending: bool,
@@ -60,7 +64,7 @@ pub struct SortState {
 impl Default for SortState {
     fn default() -> Self {
         Self {
-            column: 0,
+            column: 1,
             descending: true,
         }
     }
@@ -195,6 +199,12 @@ pub struct App {
     /// 直近の fetch 時点で「アラート行が 1 つ以上あったか」。ベルを rising edge
     /// (false→true) でのみ鳴らすための状態。`update_alert_active` が更新する。
     pub alert_active: bool,
+    /// フィルタ入力モードか否か (issue #31)。
+    ///
+    /// `F4` / `/` で `true` に入り、以降の文字入力 / Backspace が `filter` を
+    /// 編集する。`Esc` で `false` に戻し `filter` をクリアする。`false` のとき
+    /// (= 通常モード) でも `filter` が非空なら絞り込みは効き続ける。
+    pub filter_active: bool,
 }
 
 impl Default for App {
@@ -229,6 +239,7 @@ impl App {
             show_help: false,
             alerts: AlertConfig::default(),
             alert_active: false,
+            filter_active: false,
         }
     }
 
@@ -267,6 +278,66 @@ impl App {
         let rising = alerting && !self.alert_active;
         self.alert_active = alerting;
         rising
+    }
+
+    // ---------- ソート / フィルタ (issue #31) ----------
+
+    /// 数字キー (1-9) でソート列を指定する。`key` は 1-based (1 = 先頭列)。
+    ///
+    /// - 現在と **別の** 列を指したら: その列に切り替え、方向は降順にリセット。
+    /// - 現在と **同じ** 列を指したら: 方向を反転 (F5 と同じ挙動)。
+    /// - そのタブに存在しない列番号は no-op。
+    ///
+    /// 列を切り替えたとき cursor を先頭に戻す (並びが変わって元の選択行が別物に
+    /// なるため)。
+    pub fn apply_sort_key(&mut self, key: u8) {
+        if key == 0 {
+            return;
+        }
+        let column = key - 1;
+        // そのタブに無い列番号は無視する (`Tab × Key → Column` テーブルで解決)。
+        if sort::column_at(self.active_tab, column).is_none() {
+            return;
+        }
+        if self.sort.column == column {
+            self.sort.descending = !self.sort.descending;
+        } else {
+            self.sort.column = column;
+            self.sort.descending = true;
+            self.cursor = 0;
+        }
+    }
+
+    /// F5: 現在のソート方向を反転する (列はそのまま)。
+    pub fn toggle_sort_dir(&mut self) {
+        self.sort.descending = !self.sort.descending;
+    }
+
+    /// `F4` / `/`: フィルタ入力モードに入る。既存の `filter` 文字列は残したまま
+    /// 編集を続けられる (連続して絞り込みを調整できる)。
+    pub fn enter_filter(&mut self) {
+        self.filter_active = true;
+    }
+
+    /// フィルタを解除する (`Esc`)。入力モードを抜け、`filter` 文字列も空にする。
+    /// cursor は先頭に戻す (絞り込み解除で行集合が変わるため)。
+    pub fn clear_filter(&mut self) {
+        self.filter_active = false;
+        self.filter.clear();
+        self.cursor = 0;
+    }
+
+    /// フィルタ入力モード中の 1 文字入力。`filter` 末尾に push し cursor を
+    /// 先頭に戻す (絞り込み結果が変わるため)。
+    pub fn push_filter_char(&mut self, c: char) {
+        self.filter.push(c);
+        self.cursor = 0;
+    }
+
+    /// フィルタ入力モード中の Backspace。末尾 1 文字を削除し cursor を先頭に戻す。
+    pub fn pop_filter_char(&mut self) {
+        self.filter.pop();
+        self.cursor = 0;
     }
 
     /// バナー描画用の文字列を返す。mono 時のみ `[!] ` プレフィックスを付与する
@@ -363,7 +434,7 @@ mod tests {
         assert!(matches!(app.status, AppStatus::Connecting));
         assert!(app.history.is_empty());
         assert_eq!(app.active_tab, Tab::Server);
-        assert_eq!(app.sort.column, 0);
+        assert_eq!(app.sort.column, 1);
         assert!(app.sort.descending);
         assert!(app.filter.is_empty());
         assert_eq!(app.cursor, 0);
@@ -632,6 +703,116 @@ mod tests {
         assert!(!app.update_alert_active(false));
         // false → true: 再発で再び鳴らす
         assert!(app.update_alert_active(true));
+    }
+
+    // ---------- ソート / フィルタ (issue #31) ----------
+
+    #[test]
+    fn apply_sort_key_switches_column_and_resets_to_descending() {
+        let mut app = App::new();
+        // default は col 1 (RPS) なので、別列 key 3 = 2xx% (column index 2) に切替。
+        app.apply_sort_key(3);
+        assert_eq!(app.sort.column, 2);
+        assert!(app.sort.descending, "new column defaults to descending");
+    }
+
+    #[test]
+    fn apply_sort_key_same_column_toggles_direction() {
+        let mut app = App::new();
+        // default (col 1) と別の列を選んでから同キー連打で toggle を見る。
+        app.apply_sort_key(3); // col 2 を選択 (desc)
+        assert!(app.sort.descending);
+        app.apply_sort_key(3); // same column → toggle
+        assert!(!app.sort.descending, "repeat key toggles to ascending");
+        app.apply_sort_key(3);
+        assert!(app.sort.descending, "third press toggles back");
+    }
+
+    #[test]
+    fn apply_sort_key_switching_column_resets_cursor() {
+        let mut app = App::new();
+        app.cursor = 5;
+        app.apply_sort_key(3); // switch to a new column
+        assert_eq!(app.cursor, 0, "switching column resets cursor to top");
+    }
+
+    #[test]
+    fn apply_sort_key_ignores_out_of_range_for_tab() {
+        let mut app = App::new();
+        // Server タブは 8 列 (key 1-8)。key 9 (STATE) は Server に無い → no-op。
+        app.apply_sort_key(9);
+        assert_eq!(
+            app.sort.column, 1,
+            "out-of-range key is ignored (default RPS)"
+        );
+        assert!(app.sort.descending);
+
+        // Upstream タブなら key 9 = STATE が有効。
+        app.active_tab = Tab::Upstream;
+        app.apply_sort_key(9);
+        assert_eq!(app.sort.column, 8);
+    }
+
+    #[test]
+    fn apply_sort_key_zero_is_noop() {
+        let mut app = App::new();
+        app.apply_sort_key(0);
+        assert_eq!(app.sort.column, 1, "default RPS column unchanged");
+        assert!(app.sort.descending);
+    }
+
+    #[test]
+    fn toggle_sort_dir_flips_descending_only() {
+        let mut app = App::new();
+        app.apply_sort_key(3); // column 2, descending
+        app.toggle_sort_dir();
+        assert_eq!(app.sort.column, 2, "F5 keeps the column");
+        assert!(!app.sort.descending, "F5 flips direction");
+        app.toggle_sort_dir();
+        assert!(app.sort.descending);
+    }
+
+    #[test]
+    fn enter_filter_sets_active_flag() {
+        let mut app = App::new();
+        assert!(!app.filter_active);
+        app.enter_filter();
+        assert!(app.filter_active);
+    }
+
+    #[test]
+    fn push_and_pop_filter_char_edit_filter_and_reset_cursor() {
+        let mut app = App::new();
+        app.cursor = 4;
+        app.enter_filter();
+        app.push_filter_char('a');
+        app.push_filter_char('p');
+        app.push_filter_char('i');
+        assert_eq!(app.filter, "api");
+        assert_eq!(app.cursor, 0, "editing filter resets cursor");
+        app.cursor = 4;
+        app.pop_filter_char();
+        assert_eq!(app.filter, "ap");
+        assert_eq!(app.cursor, 0);
+    }
+
+    #[test]
+    fn clear_filter_exits_mode_and_empties_filter() {
+        let mut app = App::new();
+        app.enter_filter();
+        app.push_filter_char('x');
+        app.cursor = 3;
+        app.clear_filter();
+        assert!(!app.filter_active);
+        assert!(app.filter.is_empty());
+        assert_eq!(app.cursor, 0);
+    }
+
+    #[test]
+    fn new_app_has_filter_inactive() {
+        let app = App::new();
+        assert!(!app.filter_active);
+        assert!(app.filter.is_empty());
     }
 
     #[test]

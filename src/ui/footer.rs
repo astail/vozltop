@@ -25,7 +25,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::state::{App, Tab};
+use crate::state::{column_label, App};
 
 /// キー割り当てヒント。`render` が左寄せで表示する固定文字列。
 ///
@@ -73,7 +73,7 @@ fn status_paragraph(app: &App) -> Paragraph<'_> {
 /// 現在のソート列 / 方向を `"Sort: <col> ↓"` 形式で表す。
 fn sort_label(app: &App) -> String {
     let arrow = if app.sort.descending { "↓" } else { "↑" };
-    let col = column_name(app.active_tab, app.sort.column);
+    let col = column_label(app.active_tab, app.sort.column);
     format!("Sort: {col} {arrow}")
 }
 
@@ -85,29 +85,6 @@ fn filter_label(filter: &str) -> String {
         format!("Filter: {truncated}…")
     } else {
         format!("Filter: {filter}")
-    }
-}
-
-/// タブごとの列名。`SortState::column` (0-based) を人間が読めるラベルに変換。
-///
-/// 各タブの列構成は本 PR (#33) 時点では未確定 (#28-#30 で確定) なので、最低限
-/// 0 番列 = ZONE と、不明な列に対するフォールバックだけ実装。後続 issue で
-/// 具体的なマッピングが入る。
-fn column_name(_tab: Tab, column: u8) -> &'static str {
-    match column {
-        0 => "ZONE",
-        n => match n {
-            1 => "Col1",
-            2 => "Col2",
-            3 => "Col3",
-            4 => "Col4",
-            5 => "Col5",
-            6 => "Col6",
-            7 => "Col7",
-            8 => "Col8",
-            9 => "Col9",
-            _ => "?",
-        },
     }
 }
 
@@ -152,17 +129,32 @@ mod tests {
     #[test]
     fn sort_label_shows_descending_arrow_by_default() {
         let app = App::new();
-        assert_eq!(sort_label(&app), "Sort: ZONE ↓");
+        // default は RPS 降順 (Server タブ col 1)。
+        assert_eq!(sort_label(&app), "Sort: RPS ↓");
     }
 
     #[test]
     fn sort_label_shows_ascending_arrow_when_not_descending() {
         let mut app = App::new();
+        // Server タブ col 1 = RPS (issue #31 の列マッピング)。
         app.sort = SortState {
             column: 1,
             descending: false,
         };
-        assert_eq!(sort_label(&app), "Sort: Col1 ↑");
+        assert_eq!(sort_label(&app), "Sort: RPS ↑");
+    }
+
+    #[test]
+    fn sort_label_uses_tab_specific_column_names() {
+        // 同じ column index でもタブで列名が変わる (issue #31)。
+        let mut app = App::new();
+        app.sort = SortState {
+            column: 8,
+            descending: true,
+        };
+        app.active_tab = Tab::Upstream;
+        // Upstream col 8 (= 9 番目) は STATE。
+        assert_eq!(sort_label(&app), "Sort: STATE ↓");
     }
 
     #[test]
@@ -179,9 +171,15 @@ mod tests {
     }
 
     #[test]
-    fn column_name_zero_is_zone_for_all_tabs() {
+    fn sort_label_zero_is_zone_for_all_tabs() {
+        let mut app = App::new();
+        app.sort = SortState {
+            column: 0,
+            descending: true,
+        };
         for tab in [Tab::Server, Tab::Upstream, Tab::Cache] {
-            assert_eq!(column_name(tab, 0), "ZONE");
+            app.active_tab = tab;
+            assert_eq!(sort_label(&app), "Sort: ZONE ↓");
         }
     }
 
