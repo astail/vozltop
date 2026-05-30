@@ -1,0 +1,160 @@
+name: Release
+
+# `v*` タグの push でクロスコンパイルしバイナリを GitHub Release に添付する (issue #11)。
+#
+# ターゲット (CLAUDE.md / ROADMAP.md 準拠):
+#   - x86_64-unknown-linux-musl   (静的リンク、glibc 互換性問題を回避)
+#   - aarch64-unknown-linux-musl  (静的リンク)
+#   - aarch64-apple-darwin        (Apple Silicon)
+#
+# 配布物は `vozltop-<version>-<target>.tar.gz` に揃え、Release 添付前に
+# SHA256SUMS を生成する。reqwest は `rustls-tls-native-roots` を使うため
+# OpenSSL ヘッダが要らず、`cross` 不要で素の cargo + musl ツールチェインで通る。
+#
+# Phase 2 残タスク (本 PR スコープ外、別 issue で対応):
+#   - minisign 署名 (鍵管理が必要)
+#   - Homebrew tap 自動更新
+#   - .deb / .rpm パッケージ生成
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "リリース用タグ (例: v0.1.0)。手動実行時のみ使用"
+        required: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: false
+          - target: aarch64-unknown-linux-musl
+            # GitHub-hosted の ubuntu-24.04-arm runner はネイティブ aarch64 なので
+            # musl ターゲット用 linker (musl-tools) を入れれば cross 不要。
+            os: ubuntu-24.04-arm
+            cross: false
+          - target: aarch64-apple-darwin
+            os: macos-14
+            cross: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+          save-if: false
+
+      - name: musl ツールチェインを導入 (Linux ターゲットのみ)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: cargo build --release --locked
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: tarball 作成 + SHA256
+        id: package
+        shell: bash
+        # workflow injection 対策: untrusted な可能性のある入力 (workflow_dispatch
+        # の inputs.tag) は env 経由で渡し、`run:` 本文に直接展開しない。
+        # 参考: https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          # tag 名から version を取り出す。workflow_dispatch では入力値を使う。
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            tag="${INPUT_TAG}"
+          else
+            tag="${GITHUB_REF#refs/tags/}"
+          fi
+          # v0.1.0 形式以外は弾く (誤入力 / 注入対策の二重防御)。
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]; then
+            echo "::error::想定外の tag 形式です: ${tag}"
+            exit 1
+          fi
+          version="${tag#v}"
+          target="${TARGET}"
+          archive="vozltop-${version}-${target}.tar.gz"
+
+          staging="vozltop-${version}-${target}"
+          mkdir -p "${staging}"
+          cp "target/${target}/release/vozltop" "${staging}/"
+          cp README.md LICENSE "${staging}/"
+
+          tar czf "${archive}" "${staging}"
+          shasum -a 256 "${archive}" > "${archive}.sha256"
+
+          echo "archive=${archive}" >> "$GITHUB_OUTPUT"
+
+      - name: artifact をアップロード
+        uses: actions/upload-artifact@v4
+        with:
+          name: vozltop-${{ matrix.target }}
+          path: |
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.archive }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: GitHub Release を作成
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: SHA256SUMS を集約
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          # 個別の *.sha256 を 1 ファイルにまとめる。verify は
+          #   shasum -a 256 -c SHA256SUMS
+          # で全アーカイブを検証できる。
+          cat *.sha256 > SHA256SUMS
+          rm -f *.sha256
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+
+      - name: Release を発行
+        uses: softprops/action-gh-release@v2
+        with:
+          # tag push 起動時は GITHUB_REF から自動解決される。
+          # workflow_dispatch のときは入力された tag を使う。
+          tag_name: ${{ github.event.inputs.tag }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/vozltop-*.tar.gz
+            dist/SHA256SUMS
