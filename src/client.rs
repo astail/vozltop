@@ -337,11 +337,12 @@ fn warn_insecure(no_color: bool) {
     });
 }
 
-/// argv に password / Bearer トークンが平文で乗っているときの起動時警告 (issue #40)。
+/// argv に password / Bearer トークンが平文で乗っているときの起動時警告 (issue #40 / #107)。
 ///
 /// 共有ホストでは `ps` 出力に argv が見えるため、`--user user:pass` や
-/// `--header 'Authorization: Bearer ...'` を直接渡すと他ユーザに漏れる。
-/// 回避策 (env / @file / stdin) を 1 行で示す。
+/// `--header 'Authorization: Bearer ...'`、または URL に埋め込んだ credentials
+/// (`https://user:pass@host/...`) を直接渡すと他ユーザに漏れる。回避策
+/// (env / @file / stdin / URL から credentials を分離) を 1 行で示す。
 ///
 /// stderr 出力 + ANSI 黄色 (太字)。`OnceLock` で 1 度きり。
 fn warn_argv_secrets(no_color: bool) {
@@ -349,7 +350,7 @@ fn warn_argv_secrets(no_color: bool) {
     WARNED.get_or_init(|| {
         let msg = "WARNING: secrets in argv are visible to other users via `ps`. \
                    Consider using VOZLTOP_PASSWORD env, --user user:- (stdin), \
-                   or --header @file to avoid exposing them.";
+                   --header @file, or removing user:pass from the URL to avoid exposing them.";
         if no_color {
             eprintln!("{msg}");
         } else {

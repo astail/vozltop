@@ -189,7 +189,7 @@ pub fn no_color_env() -> bool {
     matches!(env::var_os("NO_COLOR"), Some(v) if !v.is_empty())
 }
 
-/// argv に秘匿情報が露出していそうか判定する (issue #40)。
+/// argv に秘匿情報が露出していそうか判定する (issue #40 / #107)。
 ///
 /// プロセスの argv をなめて以下のいずれかに該当する場合 `true`:
 ///
@@ -197,6 +197,10 @@ pub fn no_color_env() -> bool {
 ///   かつ `VOZLTOP_PASSWORD` 環境変数が **未設定**
 /// - `--header` 引数が `@` 始まりではなく、value 部分が `Bearer ` / `Basic ` で始まる
 ///   (= Authorization 系のトークンが平文で argv に乗っている可能性大)
+/// - positional な URL 引数の userinfo に **非空 password** が含まれる
+///   (例: `vozltop https://admin:secret@host/...`)。
+///   `--user` と違って `VOZLTOP_PASSWORD` でも上書きされないため、env がセットされていても警告する。
+///   username のみ (`https://admin@host/...`) は curl 互換で警告対象外。
 ///
 /// `OsString` を一度全部 `String` 化するため非 UTF-8 引数は判定対象外
 /// (実害無し: 非 UTF-8 ならいずれ clap で reject される)。
@@ -210,6 +214,10 @@ pub fn detect_argv_secret() -> bool {
 /// [`detect_argv_secret`] の純粋関数版 (テスト用)。
 pub fn detect_argv_secret_in(argv: &[String], env_password: Option<String>) -> bool {
     let env_set = env_password.is_some_and(|v| !v.is_empty());
+    // 直前の引数が「値を取るフラグ」だった場合 true。次の引数は positional として
+    // 扱わず URL 検査の対象外にする (例: `--user alice:pw` の `alice:pw` を URL として
+    // パースしようとしない)。`=` 一体型 (`--user=alice:pw`) はこの状態には入らない。
+    let mut prev_takes_value = false;
     for (idx, arg) in argv.iter().enumerate() {
         // --user X:Y / -u X:Y
         let user_value = if arg == "--user" || arg == "-u" {
@@ -234,14 +242,44 @@ pub fn detect_argv_secret_in(argv: &[String], env_password: Option<String>) -> b
                 .or_else(|| arg.strip_prefix("-H="))
         };
         if let Some(v) = header_value {
-            if v.starts_with(HEADER_FILE_PREFIX) {
-                continue;
-            }
-            if let Some((_, value)) = v.split_once(':') {
-                let value = value.trim_start_matches([' ', '\t']);
-                if value.starts_with("Bearer ") || value.starts_with("Basic ") {
-                    return true;
+            if !v.starts_with(HEADER_FILE_PREFIX) {
+                if let Some((_, value)) = v.split_once(':') {
+                    let value = value.trim_start_matches([' ', '\t']);
+                    if value.starts_with("Bearer ") || value.starts_with("Basic ") {
+                        return true;
+                    }
                 }
+            }
+        }
+
+        // issue #107: positional な URL に userinfo password が含まれているか。
+        // - idx 0 (program name) はスキップ
+        // - 直前のフラグが「値を取る」だった場合、その値はフラグの引数なのでスキップ
+        // - フラグ自身 (`-` 始まり) もスキップし、値を取るフラグなら次反復用に flag を立てる
+        // - それ以外 (= 純粋な positional) は URL として parse を試み、password が
+        //   非空なら警告対象
+        let take_value_was_pending = prev_takes_value;
+        prev_takes_value = false;
+        if idx == 0 || take_value_was_pending {
+            continue;
+        }
+        if arg.starts_with('-') {
+            // bare 形式 (`--user X`) のみ次の arg を値として消費。`=` 一体型は単独で完結。
+            prev_takes_value = matches!(
+                arg.as_str(),
+                "-u" | "--user"
+                    | "-H"
+                    | "--header"
+                    | "-i"
+                    | "--interval"
+                    | "--alert-5xx-pct"
+                    | "--alert-p95-ms"
+            );
+            continue;
+        }
+        if let Ok(url) = Url::parse(arg) {
+            if url.password().is_some_and(|p| !p.is_empty()) {
+                return true;
             }
         }
     }
@@ -920,6 +958,115 @@ mod tests {
             "X-Trace-Id: 12345".to_string(),
         ];
         assert!(!detect_argv_secret_in(&argv, None));
+    }
+
+    // ---------- issue #107: URL userinfo の credentials 検知 ----------
+
+    #[test]
+    fn detect_argv_url_with_password_returns_true() {
+        let argv = vec![
+            "vozltop".to_string(),
+            "https://admin:secret@nginx.example.com/status/format/json".to_string(),
+        ];
+        assert!(detect_argv_secret_in(&argv, None));
+    }
+
+    #[test]
+    fn detect_argv_url_with_password_returns_true_even_when_env_set() {
+        // issue #107: URL に埋め込んだ credentials は VOZLTOP_PASSWORD では上書きされない
+        // (env は `--user` の password にしか効かない)。argv に残るため env がセット
+        // されていても警告する。
+        let argv = vec![
+            "vozltop".to_string(),
+            "https://admin:secret@host/status".to_string(),
+        ];
+        assert!(detect_argv_secret_in(
+            &argv,
+            Some("env_pass_does_not_save_url".to_string())
+        ));
+    }
+
+    #[test]
+    fn detect_argv_url_username_only_returns_false() {
+        // username のみ (password 無し) は curl 互換で警告対象外。
+        let argv = vec![
+            "vozltop".to_string(),
+            "https://admin@host/status".to_string(),
+        ];
+        assert!(!detect_argv_secret_in(&argv, None));
+    }
+
+    #[test]
+    fn detect_argv_url_empty_password_returns_false() {
+        // `user:` (空 password) は警告対象外 (--user 側の挙動と整合)。
+        let argv = vec![
+            "vozltop".to_string(),
+            "https://admin:@host/status".to_string(),
+        ];
+        assert!(!detect_argv_secret_in(&argv, None));
+    }
+
+    #[test]
+    fn detect_argv_url_without_userinfo_returns_false() {
+        // 通常 URL (credentials 無し) は警告対象外。回帰防止用に明示。
+        let argv = vec![
+            "vozltop".to_string(),
+            "https://nginx.example.com/status/format/json".to_string(),
+        ];
+        assert!(!detect_argv_secret_in(&argv, None));
+    }
+
+    #[test]
+    fn detect_argv_url_with_flags_after_returns_true() {
+        // URL の後にフラグが続くケース。位置に関わらず検出する。
+        let argv = vec![
+            "vozltop".to_string(),
+            "https://admin:secret@host/status".to_string(),
+            "--interval".to_string(),
+            "0.5".to_string(),
+        ];
+        assert!(detect_argv_secret_in(&argv, None));
+    }
+
+    #[test]
+    fn detect_argv_url_with_flags_before_returns_true() {
+        // フラグが URL より先に来るケース。bare 形式 `-i 0.5` の値 `0.5` を URL として
+        // 誤って parse しないこと (`0.5` は Url::parse で error)。
+        let argv = vec![
+            "vozltop".to_string(),
+            "--interval".to_string(),
+            "0.5".to_string(),
+            "https://admin:secret@host/status".to_string(),
+        ];
+        assert!(detect_argv_secret_in(&argv, None));
+    }
+
+    #[test]
+    fn detect_argv_user_value_is_not_parsed_as_url() {
+        // `--user alice:s3cret` の `alice:s3cret` が誤って URL として parse され
+        // 警告するのを防ぐ (既存の --user 経路で env_set=true のとき) — というよりも
+        // URL parse ロジックがフラグの値を踏まないことの回帰防止。
+        let argv = vec![
+            "vozltop".to_string(),
+            "https://host/status".to_string(),
+            "--user".to_string(),
+            "alice:s3cret".to_string(),
+        ];
+        // env がセット済みなので --user 側は false。URL 側も userinfo 無しなので false。
+        // 結果: false (= alice:s3cret が URL として参照されない証拠)。
+        assert!(!detect_argv_secret_in(&argv, Some("env_pass".to_string())));
+    }
+
+    #[test]
+    fn detect_argv_url_with_eq_form_flag_returns_true() {
+        // `--user=...` 一体型でも URL 検査は正しく動く。
+        let argv = vec![
+            "vozltop".to_string(),
+            "--user=alice:plain".to_string(), // 既存ロジックで true
+            "https://host/status".to_string(),
+        ];
+        // alice:plain で既に true になるが、URL の検査経路が阻害されないことの確認
+        assert!(detect_argv_secret_in(&argv, None));
     }
 
     /// テスト中に環境変数を一時的に変更/復元するガード。
