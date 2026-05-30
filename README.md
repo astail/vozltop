@@ -6,8 +6,6 @@
 
 `htop`-like real-time TUI for [vozlt/nginx-module-vts](https://github.com/vozlt/nginx-module-vts).
 
-> ⚠️ **Status: pre-alpha.** Specification fixed, implementation in progress. See [docs/DESIGN.md](docs/DESIGN.md) and [CLAUDE.md](CLAUDE.md) for current state.
-
 ## なに？
 
 nginx-module-vts は nginx の vhost / upstream / cache 単位のトラフィック統計を JSON で公開してくれる。`vozltop` はそれを `htop` のように **1 バイナリで起動・即ソート / フィルタ可能・ssh 越しに動く** TUI で眺めるためのツール。
