@@ -50,6 +50,30 @@ pub enum Tab {
     Filter,
 }
 
+impl Tab {
+    /// 次のタブ (`Server → Upstream → Cache → Filter → Server`)。
+    ///
+    /// 4 タブを循環する固定順。`App::next_tab` (= `Tab` キー) のヘルパ。
+    fn next(self) -> Self {
+        match self {
+            Tab::Server => Tab::Upstream,
+            Tab::Upstream => Tab::Cache,
+            Tab::Cache => Tab::Filter,
+            Tab::Filter => Tab::Server,
+        }
+    }
+
+    /// 前のタブ (`next` の逆順)。`App::prev_tab` (= `Shift+Tab`) のヘルパ。
+    fn prev(self) -> Self {
+        match self {
+            Tab::Server => Tab::Filter,
+            Tab::Upstream => Tab::Server,
+            Tab::Cache => Tab::Upstream,
+            Tab::Filter => Tab::Cache,
+        }
+    }
+}
+
 /// ソート列 / 方向。`column` のセマンティクスはタブごとに異なる (詳細は
 /// docs/DESIGN.md)。issue #28 で実装を埋める。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -279,6 +303,35 @@ impl App {
         let rising = alerting && !self.alert_active;
         self.alert_active = alerting;
         rising
+    }
+
+    // ---------- タブ切替 (issue #104) ----------
+
+    /// `Tab` キー: 次のタブに進める (`Server → Upstream → Cache → Filter → Server`)。
+    ///
+    /// タブ間で列構成 / 既定ソート / 行集合が変わるため、以下を毎回リセットする:
+    ///
+    /// - `sort`: タブ既定の `SortState::default()` (column 1 = RPS / HIT% 降順)
+    /// - `cursor`: 先頭行 (0)
+    /// - `detail_zone`: 閉じる (タブ間で zone 名の意味が違うため)
+    ///
+    /// `filter` 文字列はそのまま維持する (`Server` で絞り込んだ後 `Upstream` に
+    /// 移っても `api` でフィルタを継続したい運用想定)。
+    pub fn next_tab(&mut self) {
+        self.switch_tab(self.active_tab.next());
+    }
+
+    /// `Shift+Tab` キー: 前のタブに戻る ([`next_tab`] の逆順)。リセット規約は同じ。
+    pub fn prev_tab(&mut self) {
+        self.switch_tab(self.active_tab.prev());
+    }
+
+    /// `active_tab` を切り替えて付随状態をリセットする内部 helper。
+    fn switch_tab(&mut self, next: Tab) {
+        self.active_tab = next;
+        self.sort = SortState::default();
+        self.cursor = 0;
+        self.detail_zone = None;
     }
 
     // ---------- ソート / フィルタ (issue #31) ----------
@@ -829,5 +882,74 @@ mod tests {
             !app.history.nginx_restart_detected(),
             "fetch 失敗時に restart flag をクリアすること"
         );
+    }
+
+    // ---------- タブ切替 (issue #104) ----------
+
+    #[test]
+    fn next_tab_cycles_server_to_upstream_to_cache_to_filter_to_server() {
+        let mut app = App::new();
+        assert_eq!(app.active_tab, Tab::Server);
+        app.next_tab();
+        assert_eq!(app.active_tab, Tab::Upstream);
+        app.next_tab();
+        assert_eq!(app.active_tab, Tab::Cache);
+        app.next_tab();
+        assert_eq!(app.active_tab, Tab::Filter);
+        app.next_tab();
+        assert_eq!(app.active_tab, Tab::Server, "Filter の次は Server に戻る");
+    }
+
+    #[test]
+    fn prev_tab_cycles_in_reverse() {
+        let mut app = App::new();
+        app.prev_tab();
+        assert_eq!(app.active_tab, Tab::Filter, "Server の前は Filter");
+        app.prev_tab();
+        assert_eq!(app.active_tab, Tab::Cache);
+        app.prev_tab();
+        assert_eq!(app.active_tab, Tab::Upstream);
+        app.prev_tab();
+        assert_eq!(app.active_tab, Tab::Server);
+    }
+
+    #[test]
+    fn switching_tab_resets_cursor_and_sort_and_detail() {
+        let mut app = App::new();
+        // 切替前にいくつかの状態を持たせる
+        app.cursor = 7;
+        app.sort = SortState {
+            column: 5,
+            descending: false,
+        };
+        app.detail_zone = Some("api.example.com".to_string());
+
+        app.next_tab();
+
+        assert_eq!(app.active_tab, Tab::Upstream);
+        assert_eq!(app.cursor, 0, "タブ切替で cursor は先頭に戻る");
+        assert_eq!(
+            app.sort,
+            SortState::default(),
+            "タブ切替で sort はタブ既定 (RPS / HIT% 降順) に戻る"
+        );
+        assert!(
+            app.detail_zone.is_none(),
+            "タブ間で zone 名は意味が違うため detail_zone は閉じる"
+        );
+    }
+
+    #[test]
+    fn switching_tab_keeps_filter_string() {
+        // Server で絞り込んだ "api" を Upstream に移動してもそのまま使えるよう、
+        // タブ切替は filter 文字列を破壊しない (next_tab の docstring 規約)。
+        let mut app = App::new();
+        app.filter = "api".to_string();
+
+        app.next_tab();
+        assert_eq!(app.filter, "api", "next_tab は filter を維持する");
+
+        app.prev_tab();
+        assert_eq!(app.filter, "api", "prev_tab も filter を維持する");
     }
 }

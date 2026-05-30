@@ -32,7 +32,7 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 
 ### Fixed
 
-- （バグ修正をここに追加）
+- `Tab` / `Shift+Tab` で zone 種別タブ (Server / Upstream / Cache / Filter) を循環できるようにした。これまでヘルプ / footer は案内していたが key handler 側が未実装で Server タブから動かせなかった (closes #104)
 
 ### Security
 
