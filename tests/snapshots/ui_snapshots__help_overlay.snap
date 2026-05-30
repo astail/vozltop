@@ -3,8 +3,8 @@ source: tests/ui_snapshots.rs
 expression: render_to_string(&app)
 ---
 "Conn ████████1/1 ████████  active 1  reading 0  writing 1  waiting 0            "
-"RPS                                                    0/s          5xx 0.00%   "
-"in                          0 B/s       out                         0 B/s       "
+"RPS  █                                                 1020/s       5xx 0.00%   "
+"in  █                       89.0 KB/s   out █                       168.0 KB/s  "
 "ZONE             RPS      2xx%    4xx%    5xx%    p95      IN/s       OUT/s     "
 "*  ┌ vozltop — key bindings ────────────────────────────────────────────────┐/s "
 "_  │F1 / ?            open or close this help                               │/s "

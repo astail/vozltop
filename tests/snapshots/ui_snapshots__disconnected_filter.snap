@@ -4,8 +4,8 @@ expression: render_to_string(&app)
 ---
 "[Disconnected]  consecutive failures: 5                                         "
 "Conn ████████1/1 ████████  active 1  reading 0  writing 1  waiting 0            "
-"RPS                                                    0/s          5xx 0.00%   "
-"in                          0 B/s       out                         0 B/s       "
+"RPS  █                                                 1020/s       5xx 0.00%   "
+"in  █                       89.0 KB/s   out █                       168.0 KB/s  "
 "ZONE             RPS      2xx%    4xx%    5xx%    p95      IN/s       OUT/s     "
 "country::*/US    120      99.9%   0.0%    0.0%    ~0ms     9.9 KB/s   19.9 KB/s "
 "country::*/JP    59.9     99.7%   0.1%    0.2%    ~0ms     4.9 KB/s   9.9 KB/s  "

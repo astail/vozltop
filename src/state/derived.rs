@@ -82,6 +82,34 @@ pub struct DerivedSnapshot {
     pub cache: HashMap<String, CacheDerived>,
 }
 
+impl DerivedSnapshot {
+    /// ヘッダ sparkline 用に、serverZones 横断で合算した RPS / BW を返す。
+    ///
+    /// 戻り値は `(rps_total, bw_in_per_sec_total, bw_out_per_sec_total)`、
+    /// それぞれ `f64.round() as u64`。serverZones だけを集計するのは:
+    ///
+    /// - `upstream` は client→server の同じリクエストが server zone と upstream で
+    ///   二重計上されるため、合算すると ratio が壊れる
+    /// - `cache` は `request_counter` を持たないため RPS は出ない
+    ///
+    /// 結果として「nginx が client から受けたトラフィック全体」が一次的指標となる。
+    pub fn server_totals(&self) -> (u64, u64, u64) {
+        let mut rps = 0.0f64;
+        let mut bw_in = 0.0f64;
+        let mut bw_out = 0.0f64;
+        for d in self.server.values() {
+            rps += d.rates.rps;
+            bw_in += d.rates.bw_in_per_sec;
+            bw_out += d.rates.bw_out_per_sec;
+        }
+        (
+            rps.round() as u64,
+            bw_in.round() as u64,
+            bw_out.round() as u64,
+        )
+    }
+}
+
 /// 2 つの `VtsStatus` snapshot から派生メトリクスを算出する。
 ///
 /// 戻り値が `None` になる条件:
@@ -304,5 +332,74 @@ mod tests {
         };
         let pct = cache_hit_pct(&r).unwrap();
         assert!((pct - 99.0).abs() < 1e-9, "expected 99.0%, got {pct}");
+    }
+
+    // ---------- server_totals (issue #105) ----------
+
+    #[test]
+    fn server_totals_returns_zero_for_default_snapshot() {
+        let d = DerivedSnapshot::default();
+        assert_eq!(d.server_totals(), (0, 0, 0));
+    }
+
+    #[test]
+    fn server_totals_sums_multiple_server_zones() {
+        // 3 zone を入れて RPS / BW を全部足した値が返ることを固定する。
+        let mut d = DerivedSnapshot::default();
+        d.server.insert(
+            "api".to_string(),
+            ServerDerived {
+                rates: ZoneRates {
+                    rps: 100.0,
+                    bw_in_per_sec: 1_000.0,
+                    bw_out_per_sec: 10_000.0,
+                },
+                ratios: StatusRatios::default(),
+            },
+        );
+        d.server.insert(
+            "www".to_string(),
+            ServerDerived {
+                rates: ZoneRates {
+                    rps: 50.7,
+                    bw_in_per_sec: 500.4,
+                    bw_out_per_sec: 5_000.6,
+                },
+                ratios: StatusRatios::default(),
+            },
+        );
+        let (rps, bw_in, bw_out) = d.server_totals();
+        // 100 + 50.7 = 150.7 → round 151
+        assert_eq!(rps, 151);
+        // 1000 + 500.4 = 1500.4 → round 1500
+        assert_eq!(bw_in, 1_500);
+        // 10000 + 5000.6 = 15000.6 → round 15001
+        assert_eq!(bw_out, 15_001);
+    }
+
+    #[test]
+    fn server_totals_ignores_upstream_and_cache() {
+        // 二重計上回避: upstream / cache を埋めても server_totals は server のみ集計する。
+        let mut d = DerivedSnapshot::default();
+        d.upstream.insert(
+            "backend/127.0.0.1:9001".to_string(),
+            UpstreamDerived {
+                rates: ZoneRates {
+                    rps: 9_999.0,
+                    bw_in_per_sec: 9_999.0,
+                    bw_out_per_sec: 9_999.0,
+                },
+                ratios: StatusRatios::default(),
+            },
+        );
+        d.cache.insert(
+            "demo_cache".to_string(),
+            CacheDerived {
+                bw_in_per_sec: 8_888.0,
+                bw_out_per_sec: 7_777.0,
+                hit_pct: Some(99.0),
+            },
+        );
+        assert_eq!(d.server_totals(), (0, 0, 0));
     }
 }
