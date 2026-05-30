@@ -32,7 +32,6 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use clap::Parser;
 use color_eyre::eyre::{Result, WrapErr};
 use crossterm::cursor::Hide;
 use crossterm::event::{EventStream, KeyCode, KeyEvent};
@@ -68,7 +67,9 @@ async fn main() -> ExitCode {
 
 async fn run() -> Result<()> {
     color_eyre::install()?;
-    let args = Args::parse();
+    // issue #46: TOML config を読み、`@alias` を URL + 各フラグに展開してから
+    // 通常の clap parse を実行する。alias を使わなければ従来と完全に同じ動作。
+    let args = Args::parse_with_config().map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
 
     // CLI / HTTP セットアップは TUI 起動前に済ませる。ここで失敗した場合は
     // raw mode に入っていないので restore 不要。

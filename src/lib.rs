@@ -5,6 +5,7 @@
 
 pub mod cli;
 pub mod client;
+pub mod config;
 pub mod event;
 pub mod model;
 pub mod state;

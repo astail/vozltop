@@ -187,6 +187,7 @@ mod tests {
             no_color,
             alert_5xx_pct: None,
             alert_p95_ms: None,
+            config: None,
         }
     }
 

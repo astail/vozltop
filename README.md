@@ -106,6 +106,42 @@ vozltop https://nginx.example.com/status/format/json \
   --header 'Authorization: Bearer eyJ...'
 ```
 
+### TOML 設定ファイル + alias 起動
+
+繰り返し使うホストは `~/.config/vozltop/config.toml` に登録して `vozltop @<alias>` で呼び出せます。
+
+```toml
+# ~/.config/vozltop/config.toml (mode 0600 推奨)
+
+[hosts.prod]
+url = "https://nginx.prod.example.com/status/format/json"
+user = "admin:secret"
+interval = 0.5
+alert_5xx_pct = 1.0
+
+[hosts.staging]
+url = "https://nginx.staging.example.com/status/format/json"
+```
+
+```bash
+vozltop @prod                       # config の url / user / interval / alert を使用
+vozltop @prod --interval 2.0        # CLI フラグは config を上書き
+vozltop --config ./custom.toml @x   # config path を明示
+VOZLTOP_CONFIG=~/x.toml vozltop @x  # 環境変数で path 指定
+```
+
+設定の優先度: **CLI フラグ > config の `[hosts.<alias>]` > 組み込み既定**。alias を使わずに URL を直指定する場合、config は無視されます (互換性維持)。
+
+config 探索順:
+
+1. `--config <path>` (明示指定)
+2. `$VOZLTOP_CONFIG` 環境変数
+3. `directories::ProjectDirs` (Linux: `~/.config/vozltop/config.toml` / macOS: `~/Library/Application Support/vozltop/config.toml` / Windows: `%APPDATA%\vozltop\config.toml`)
+
+いずれも存在しない場合は config 無しで動作 (= v1 互換)。
+
+password は本 PR では config に平文で記載します。keyring 連携は Phase 2 別 issue で検討。`chmod 0600` で他ユーザから読めないようにすることを推奨します。
+
 ### Secrets を argv に露出しない
 
 共有マシン (jump-host / kubernetes pod など) では `ps` で他ユーザに argv が見えるため、`--user user:pass` や `--header 'Authorization: Bearer ...'` を直接渡すと password / token が漏れます。本ツールはこれを回避するために以下のフォールバックを提供します:

@@ -13,6 +13,7 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 
 ### Added
 
+- TOML 設定ファイル (`~/.config/vozltop/config.toml` 他 XDG ベース) と `vozltop @<alias>` 形式のエイリアス起動をサポート。`[hosts.<alias>]` セクションに URL / user / interval / headers / insecure / no_color / alert 閾値を書いて再利用できる。`--config <path>` フラグまたは `$VOZLTOP_CONFIG` 環境変数で明示指定も可能。CLI フラグは config を上書き (CLI > config[hosts.<alias>] > 組み込み既定)。keyring 連携は本 PR スコープ外で、password は config に平文 (chmod 0600 推奨) (closes #46)
 - Linux パッケージ (`.deb` / `.rpm`) を tag push 時に GitHub Release へ自動添付するよう `release.yml` に `packaging` job を追加。`cargo-deb` と `cargo-generate-rpm` を利用し、`x86_64` / `aarch64` の 2 アーキテクチャをサポート。あわせて Cargo.toml に `[package.metadata.deb]` / `[package.metadata.generate-rpm]` を追加 (closes #49)
 - Homebrew formula のテンプレート `packaging/homebrew/vozltop.rb.template` を staging。`astail/homebrew-tap` への反映は手動 (Phase 2 で自動化候補)
 - README にインストール手順 (tarball / .deb / .rpm / Homebrew) を追加
