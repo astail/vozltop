@@ -16,14 +16,17 @@
 //! 入れる際にも同じ検証器を再利用するため。
 
 use std::env;
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, BufRead};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use clap::Parser;
 use reqwest::header::{HeaderName, HeaderValue};
 use url::Url;
+
+use crate::config::{Config, ConfigError, HostConfig};
 
 /// `VOZLTOP_PASSWORD` 環境変数: 設定時は `--user user:...` の password を
 /// argv ではなく環境から取得 (issue #40)。共有マシンで `ps` から password が
@@ -103,9 +106,87 @@ pub struct Args {
     /// 行の p95 レイテンシがこの ms 以上ならアラート表示 (ハイライト + ベル)。
     #[arg(long = "alert-p95-ms", value_name = "MS")]
     pub alert_p95_ms: Option<u64>,
+
+    /// TOML 設定ファイルのパス (issue #46)。
+    ///
+    /// 未指定の場合は `$VOZLTOP_CONFIG` 環境変数、それも無ければ
+    /// XDG ベース (`~/.config/vozltop/config.toml` 等) を探索する。
+    /// 存在しない場合は config 無しで動作。`@alias` 引数で利用する。
+    #[arg(long = "config", value_name = "PATH")]
+    pub config: Option<PathBuf>,
+}
+
+/// `Args::parse_with_config` 等で失敗したときの統合エラー型。
+#[derive(Debug)]
+pub enum ConfigArgsError {
+    /// config 読込 / alias 解決のエラー。
+    Config(ConfigError),
+    /// clap パースのエラー (= 不正引数)。`clap::Error` をそのまま包む。
+    Clap(clap::Error),
+}
+
+impl std::fmt::Display for ConfigArgsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConfigArgsError::Config(e) => write!(f, "{e}"),
+            ConfigArgsError::Clap(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for ConfigArgsError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ConfigArgsError::Config(e) => Some(e),
+            ConfigArgsError::Clap(e) => Some(e),
+        }
+    }
+}
+
+impl From<ConfigError> for ConfigArgsError {
+    fn from(e: ConfigError) -> Self {
+        ConfigArgsError::Config(e)
+    }
+}
+
+impl From<clap::Error> for ConfigArgsError {
+    fn from(e: clap::Error) -> Self {
+        ConfigArgsError::Clap(e)
+    }
 }
 
 impl Args {
+    /// 通常のエントリポイント。argv + config を読み、`@alias` を解決した最終 Args を返す。
+    ///
+    /// alias 経由 (`vozltop @prod`) の場合、`[hosts.prod]` の URL に positional 引数を
+    /// 置換し、CLI で未指定だった `--user` / `--header` / `--interval` / `--insecure` /
+    /// `--no-color` / `--alert-5xx-pct` / `--alert-p95-ms` を host config の値で補完する。
+    /// CLI で明示されたフラグは config を上書きする (CLI > config[hosts.<alias>])。
+    /// `[defaults]` は本 PR ではスコープ外 (alias 経由でも使わない)。
+    pub fn parse_with_config() -> Result<Self, ConfigArgsError> {
+        Self::parse_with_config_from(env::args_os())
+    }
+
+    /// `parse_with_config` のテスト用版 (argv を引数化)。
+    pub fn parse_with_config_from<I, S>(argv: I) -> Result<Self, ConfigArgsError>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<OsString> + Clone,
+    {
+        let mut argv: Vec<OsString> = argv.into_iter().map(Into::into).collect();
+        // Pass 1: --config フラグを peek (clap parse 前に config path を確定する)。
+        let explicit_path = find_config_flag_value(&argv);
+        // Pass 2: positional の @alias を探す
+        let alias_position = find_positional_alias_index(&argv);
+        if let Some((idx, alias)) = alias_position {
+            // alias が見つかったときだけ config を読む。alias 無しなら従来動作。
+            let config = Config::load(explicit_path.as_deref())?;
+            let host = config.resolve_alias(&alias)?;
+            apply_host_to_argv(&mut argv, idx, host);
+        }
+        Ok(Self::try_parse_from(argv)?)
+    }
+
     /// `--no-color` フラグと `NO_COLOR` 環境変数の OR 評価。
     ///
     /// <https://no-color.org/> 準拠: `NO_COLOR` は **値の有無に関わらず非空で
@@ -284,6 +365,126 @@ pub fn detect_argv_secret_in(argv: &[String], env_password: Option<String>) -> b
         }
     }
     false
+}
+
+/// argv から `--config <path>` / `--config=<path>` を探して `PathBuf` を返す。
+///
+/// clap parse 前の peek 用 (config を読んで alias 解決するため)。複数指定された場合は
+/// 最後の値を採用 (clap の "last wins" と整合)。
+fn find_config_flag_value(argv: &[OsString]) -> Option<PathBuf> {
+    let mut last: Option<PathBuf> = None;
+    let mut iter = argv.iter().enumerate();
+    while let Some((_, arg)) = iter.next() {
+        let s = arg.to_string_lossy();
+        if let Some(v) = s.strip_prefix("--config=") {
+            last = Some(PathBuf::from(v));
+        } else if s == "--config" {
+            if let Some((_, next)) = iter.next() {
+                last = Some(PathBuf::from(next));
+            }
+        }
+    }
+    last
+}
+
+/// argv の positional 引数を 1 つだけ探し、`@alias` 形式なら `(index, alias)` を返す。
+///
+/// 値を取るフラグ (`--user`, `-u`, `--header`, `-H`, `--interval`, `-i`,
+/// `--alert-5xx-pct`, `--alert-p95-ms`, `--config`) の直後の引数は positional ではなく
+/// 値とみなす。`detect_argv_secret_in` と同じスキップ規則。
+///
+/// program name (`argv[0]`) もスキップ。
+fn find_positional_alias_index(argv: &[OsString]) -> Option<(usize, String)> {
+    let mut prev_takes_value = false;
+    for (idx, arg) in argv.iter().enumerate() {
+        let s = arg.to_string_lossy();
+        if idx == 0 || prev_takes_value {
+            prev_takes_value = false;
+            continue;
+        }
+        if s.starts_with('-') {
+            prev_takes_value = matches!(
+                s.as_ref(),
+                "-u" | "--user"
+                    | "-H"
+                    | "--header"
+                    | "-i"
+                    | "--interval"
+                    | "--alert-5xx-pct"
+                    | "--alert-p95-ms"
+                    | "--config"
+            );
+            continue;
+        }
+        if let Some(alias) = Config::parse_alias_arg(&s) {
+            return Some((idx, alias.to_string()));
+        }
+        // 通常 URL positional は対象外。alias を見つけずに positional を 1 つ確定したら抜ける。
+        return None;
+    }
+    None
+}
+
+/// host config の値を argv に注入する。CLI で明示済みのフラグは上書きしない。
+///
+/// - `argv[alias_idx]` を `host.url` に書き換え
+/// - `host.user`/`headers`/`interval`/`insecure`/`no_color`/`alert_5xx_pct`/`alert_p95_ms`
+///   のうち、CLI に同名フラグが無いものを末尾に append する (clap が後勝ちなので
+///   prepend より append の方が「CLI が後に来て上書きする」の semantics と整合)
+pub(crate) fn apply_host_to_argv(argv: &mut Vec<OsString>, alias_idx: usize, host: &HostConfig) {
+    // URL 置換
+    argv[alias_idx] = OsString::from(&host.url);
+
+    // CLI に存在するフラグ名のセット (bare 形式 / = 一体型 / 短縮形)。
+    let cli_flags: Vec<String> = argv
+        .iter()
+        .map(|s| s.to_string_lossy().into_owned())
+        .collect();
+    let has_flag = |bare: &[&str]| {
+        cli_flags.iter().any(|s| {
+            bare.iter()
+                .any(|b| s == b || s.starts_with(&format!("{b}=")))
+        })
+    };
+
+    if let Some(user) = &host.user {
+        if !has_flag(&["--user", "-u"]) {
+            argv.push(OsString::from("--user"));
+            argv.push(OsString::from(user));
+        }
+    }
+    if let Some(headers) = &host.headers {
+        if !has_flag(&["--header", "-H"]) {
+            for h in headers {
+                argv.push(OsString::from("--header"));
+                argv.push(OsString::from(h));
+            }
+        }
+    }
+    if let Some(interval) = host.interval {
+        if !has_flag(&["--interval", "-i"]) {
+            argv.push(OsString::from("--interval"));
+            argv.push(OsString::from(interval.to_string()));
+        }
+    }
+    if host.insecure == Some(true) && !has_flag(&["--insecure"]) {
+        argv.push(OsString::from("--insecure"));
+    }
+    if host.no_color == Some(true) && !has_flag(&["--no-color"]) {
+        argv.push(OsString::from("--no-color"));
+    }
+    if let Some(pct) = host.alert_5xx_pct {
+        if !has_flag(&["--alert-5xx-pct"]) {
+            argv.push(OsString::from("--alert-5xx-pct"));
+            argv.push(OsString::from(pct.to_string()));
+        }
+    }
+    if let Some(ms) = host.alert_p95_ms {
+        if !has_flag(&["--alert-p95-ms"]) {
+            argv.push(OsString::from("--alert-p95-ms"));
+            argv.push(OsString::from(ms.to_string()));
+        }
+    }
 }
 
 /// `--interval` の値パーサ。
@@ -703,6 +904,7 @@ mod tests {
             no_color: flag,
             alert_5xx_pct: None,
             alert_p95_ms: None,
+            config: None,
         }
     }
 
@@ -1098,5 +1300,149 @@ mod tests {
                 None => env::remove_var(self.key),
             }
         }
+    }
+
+    // ---------- issue #46: parse_with_config (config 経由の alias 解決) ----------
+
+    fn write_tmp_config(content: &str) -> std::path::PathBuf {
+        let dir = env::temp_dir().join(format!(
+            "vozltop-config-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn parse_with_config_without_alias_is_identity() {
+        // alias を使わない場合は config を読まずに従来動作 (URL 直指定が通る)。
+        let argv = ["vozltop", "https://example.com/status"];
+        let args = Args::parse_with_config_from(argv).unwrap();
+        assert_eq!(args.url.as_str(), "https://example.com/status");
+        assert_eq!(args.interval, 1.0); // 組み込みデフォルト
+    }
+
+    #[test]
+    fn parse_with_config_resolves_alias_to_url() {
+        // alias の URL を CLI 引数 position に substitute する。
+        let cfg = write_tmp_config(
+            "[hosts.prod]\nurl = \"https://nginx.example.com/status/format/json\"\n",
+        );
+        let argv = ["vozltop", "@prod", "--config", cfg.to_str().unwrap()];
+        let args = Args::parse_with_config_from(argv).unwrap();
+        assert_eq!(
+            args.url.as_str(),
+            "https://nginx.example.com/status/format/json"
+        );
+    }
+
+    #[test]
+    fn parse_with_config_applies_host_config_when_cli_not_specified() {
+        // host config の interval / user を CLI 未指定時に補完。
+        let cfg = write_tmp_config(
+            "[hosts.prod]\nurl = \"https://h/s\"\nuser = \"alice:s3cret\"\ninterval = 0.5\n",
+        );
+        let argv = ["vozltop", "@prod", "--config", cfg.to_str().unwrap()];
+        let args = Args::parse_with_config_from(argv).unwrap();
+        assert_eq!(args.interval, 0.5);
+        assert_eq!(
+            args.user.as_ref().map(|(u, p)| (u.as_str(), p.as_str())),
+            Some(("alice", "s3cret"))
+        );
+    }
+
+    #[test]
+    fn parse_with_config_cli_overrides_host_config() {
+        // CLI で明示した interval が host config を上書きする。
+        let cfg = write_tmp_config("[hosts.prod]\nurl = \"https://h/s\"\ninterval = 0.5\n");
+        let argv = [
+            "vozltop",
+            "@prod",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--interval",
+            "2.0",
+        ];
+        let args = Args::parse_with_config_from(argv).unwrap();
+        assert_eq!(args.interval, 2.0, "CLI が host config を上書き");
+    }
+
+    #[test]
+    fn parse_with_config_alias_with_unknown_name_errors() {
+        let cfg = write_tmp_config("[hosts.prod]\nurl = \"https://h/s\"\n");
+        let argv = ["vozltop", "@missing", "--config", cfg.to_str().unwrap()];
+        let err = Args::parse_with_config_from(argv).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("missing"), "msg: {msg}");
+        assert!(msg.contains("[hosts.*]"), "msg: {msg}");
+    }
+
+    #[test]
+    fn parse_with_config_alias_without_config_file_errors() {
+        // 明示 --config が指す path が無い場合はエラー。
+        let argv = [
+            "vozltop",
+            "@prod",
+            "--config",
+            "/nonexistent/path/__nope__.toml",
+        ];
+        let err = Args::parse_with_config_from(argv).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("config file") || msg.contains("nonexistent"),
+            "msg: {msg}"
+        );
+    }
+
+    #[test]
+    fn find_config_flag_value_handles_eq_form() {
+        let argv: Vec<OsString> = ["vozltop", "--config=/a/b.toml", "@prod"]
+            .iter()
+            .map(|s| OsString::from(*s))
+            .collect();
+        assert_eq!(
+            find_config_flag_value(&argv),
+            Some(PathBuf::from("/a/b.toml"))
+        );
+    }
+
+    #[test]
+    fn find_config_flag_value_handles_bare_form() {
+        let argv: Vec<OsString> = ["vozltop", "--config", "/a/b.toml", "@prod"]
+            .iter()
+            .map(|s| OsString::from(*s))
+            .collect();
+        assert_eq!(
+            find_config_flag_value(&argv),
+            Some(PathBuf::from("/a/b.toml"))
+        );
+    }
+
+    #[test]
+    fn find_config_flag_value_none_when_absent() {
+        let argv: Vec<OsString> = ["vozltop", "https://x"]
+            .iter()
+            .map(|s| OsString::from(*s))
+            .collect();
+        assert!(find_config_flag_value(&argv).is_none());
+    }
+
+    #[test]
+    fn find_positional_alias_index_skips_flag_values() {
+        // `--user alice:pw` の値 `alice:pw` を positional として誤検出しないこと。
+        let argv: Vec<OsString> = ["vozltop", "--user", "alice:pw", "@prod"]
+            .iter()
+            .map(|s| OsString::from(*s))
+            .collect();
+        assert_eq!(
+            find_positional_alias_index(&argv),
+            Some((3, "prod".to_string()))
+        );
     }
 }

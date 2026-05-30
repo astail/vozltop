@@ -61,6 +61,13 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "macros", "time", "signal", "net", "io-util"] }
+# issue #46: TOML config + alias 起動 (`vozltop @prod`)。
+# - `toml`: deserialize-only。serialize は不要 (config を vozltop が書き出すことはない)。
+# - `directories`: XDG ベースの config path 解決 (Linux/macOS/Windows 対応)。
+# keyring 連携は Phase 2 別 issue で検討。本 PR では password 平文許容
+# (chmod 0600 推奨を docstring に記載)。
+toml = { version = "0.8", default-features = false, features = ["parse"] }
+directories = "5"
 url = "2"
 
 [dev-dependencies]

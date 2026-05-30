@@ -49,6 +49,7 @@ fn args_for(url: Url) -> Args {
         no_color: true,
         alert_5xx_pct: None,
         alert_p95_ms: None,
+        config: None,
     }
 }
 

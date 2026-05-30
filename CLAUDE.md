@@ -82,7 +82,7 @@ LLM コーディングで起こりがちな失敗（思い込みで進める / �
 | Upstream 行の粒度 | 1 行 = 1 server（`ZONE` 列は `group/host:port` 表記）。group 集約は Phase 2 |
 | histogram なし zone | p95 列を `~Nms`（平均値）表示。p95 ソート時は histogram あり zone より下位に固定 |
 | 接続数 Gauge | 観測中の rolling-max で auto-scale（`worker_connections` は JSON から取れないため） |
-| 設定ファイル | v1 では持たない（CLI 引数のみ） |
+| 設定ファイル | v1 は CLI 引数のみ。Phase 2 で `~/.config/vozltop/config.toml` + `@alias` 起動を追加 (#46)。keyring は別 issue |
 | カラー無効化 | `--no-color` フラグ + `NO_COLOR` 環境変数（https://no-color.org）両方を尊重 |
 
 ## アーキテクチャ概要
