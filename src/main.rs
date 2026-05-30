@@ -212,9 +212,10 @@ async fn event_loop(
 
 /// `AppEvent::Key` を `App` に反映する純関数。
 ///
-/// 扱うキー: F1 / `?` (help)、Enter (詳細オーバーレイを開く #32)、Esc
-/// (filter → help → detail の順で閉じる)、カーソル移動 (#28)、ソート (1-9 / F5)
-/// + フィルタ (F4 / `/` + 文字入力 / Backspace) (#31)。
+/// 扱うキー: F1 / `?` (help)、Enter (詳細オーバーレイを開く #32)、
+/// Esc (filter → help → detail の順で閉じる)、カーソル移動 (#28)、
+/// ソート (1-9 / F5) + フィルタ (F4 / `/` + 文字入力 / Backspace) (#31)、
+/// Tab / Shift+Tab で zone 種別タブ切替 (#104)。
 ///
 /// テスト容易性のため `App` への &mut 操作だけを引数に取り、terminal/IO は触らない。
 fn handle_key(app: &mut App, key: KeyEvent) {
@@ -291,9 +292,16 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::PageUp => app.cursor_page_up(),
         KeyCode::PageDown => app.cursor_page_down(),
-        _ => {
-            // 残りのキー (Tab 切替等) は後続 issue で実装。
+        // issue #104: Tab / Shift+Tab で zone 種別タブを循環する。
+        // help / detail オーバーレイ表示中は他のソート / フィルタ操作と同じく
+        // モーダル優先で無効化する (filter 入力モードは上の早期 return で処理済み)。
+        KeyCode::Tab if !app.show_help && app.detail_zone.is_none() => {
+            app.next_tab();
         }
+        KeyCode::BackTab if !app.show_help && app.detail_zone.is_none() => {
+            app.prev_tab();
+        }
+        _ => {}
     }
 }
 
@@ -657,5 +665,73 @@ mod tests {
         );
         handle_key(&mut app, press(KeyCode::Esc));
         assert!(app.detail_zone.is_none(), "second Esc closes detail");
+    }
+
+    // ---------- タブ切替 (issue #104) ----------
+
+    use vozltop::state::Tab;
+
+    #[test]
+    fn tab_key_cycles_through_zone_tabs() {
+        let mut app = App::new();
+        assert_eq!(app.active_tab, Tab::Server);
+        handle_key(&mut app, press(KeyCode::Tab));
+        assert_eq!(app.active_tab, Tab::Upstream);
+        handle_key(&mut app, press(KeyCode::Tab));
+        assert_eq!(app.active_tab, Tab::Cache);
+        handle_key(&mut app, press(KeyCode::Tab));
+        assert_eq!(app.active_tab, Tab::Filter);
+        handle_key(&mut app, press(KeyCode::Tab));
+        assert_eq!(app.active_tab, Tab::Server, "Filter の次は Server");
+    }
+
+    #[test]
+    fn shift_tab_cycles_backwards() {
+        // crossterm は Shift+Tab を `KeyCode::BackTab` として配信する。
+        let mut app = App::new();
+        handle_key(&mut app, press(KeyCode::BackTab));
+        assert_eq!(app.active_tab, Tab::Filter, "Server の前は Filter");
+        handle_key(&mut app, press(KeyCode::BackTab));
+        assert_eq!(app.active_tab, Tab::Cache);
+    }
+
+    #[test]
+    fn tab_ignored_while_help_open() {
+        let mut app = App::new();
+        app.show_help = true;
+        handle_key(&mut app, press(KeyCode::Tab));
+        assert_eq!(
+            app.active_tab,
+            Tab::Server,
+            "help モーダル中は Tab で切り替えない"
+        );
+    }
+
+    #[test]
+    fn tab_ignored_while_detail_open() {
+        let mut app = App::new();
+        app.detail_zone = Some("alpha".to_string());
+        handle_key(&mut app, press(KeyCode::Tab));
+        assert_eq!(
+            app.active_tab,
+            Tab::Server,
+            "detail オーバーレイ中は Tab で切り替えない"
+        );
+    }
+
+    #[test]
+    fn tab_ignored_while_filter_input_active() {
+        // F4 / `/` でフィルタ入力モードに入った後は、Tab を文字入力扱いしない
+        // (filter モード中の早期 return 内に Tab の枝が無いため、`Char(...)` 系
+        // と異なり何も起きない = active_tab も filter 文字列も不変)。
+        let mut app = App::new();
+        app.enter_filter();
+        let before_filter = app.filter.clone();
+        handle_key(&mut app, press(KeyCode::Tab));
+        assert_eq!(app.active_tab, Tab::Server);
+        assert_eq!(
+            app.filter, before_filter,
+            "filter 入力モード中 Tab は no-op"
+        );
     }
 }
