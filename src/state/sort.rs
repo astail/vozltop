@@ -72,6 +72,12 @@ impl SortColumn {
         column_at(Tab::Filter, column).unwrap_or(SortColumn::Zone)
     }
 
+    /// Cache タブの 0-based 列 index → [`SortColumn`]。範囲外は ZONE
+    /// (`server_at` と同じく防御的フォールバック、issue #106)。
+    pub fn cache_at(column: u8) -> SortColumn {
+        column_at(Tab::Cache, column).unwrap_or(SortColumn::Zone)
+    }
+
     /// footer / help 表示用の列名。`ui::table::SERVER_HEADERS` 等のヘッダ文字列と
     /// 一致させる (ユーザーが画面上のヘッダと footer の対応を取れるように)。
     pub fn label(self) -> &'static str {

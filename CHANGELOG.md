@@ -34,6 +34,7 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 
 - `Tab` / `Shift+Tab` で zone 種別タブ (Server / Upstream / Cache / Filter) を循環できるようにした。これまでヘルプ / footer は案内していたが key handler 側が未実装で Server タブから動かせなかった (closes #104)
 - ヘッダの RPS / BW in / BW out sparkline が常時空のままだった問題を修正。`App::on_fetch_ok` が `derived::compute(prev, now)` を呼んでおらず `History::push_derived` も発火しなかったため、production 上で sparkline 3 本と現値表示が永続的に 0 になっていた。直前 snapshot との差分から派生メトリクスを算出し、serverZones を集計した合算値で sparkline を更新するよう修正 (closes #105)
+- Cache タブで数字キー (1-8) / F5 のソート操作が表示に反映されない問題を修正。`render_cache` が `App::sort` を読まず `sort_cache_rows_default` (HIT% 降順固定) しか呼んでいなかったため、footer の `Sort: MISS ↑` 等が表示されても並び順は変わらない不整合があった。`sort_cache_rows(rows, sort)` を新規実装し、Cache タブの 8 列 (ZONE / HIT% / MISS / EXPIRED / STALE / USED / IN/s / OUT/s) すべてに動的ソートを対応。USED は比率 (used_size / max_size) 基準で並べ、`max_size == 0` は末尾。あわせて `selected_zone` の Cache 分岐を実装し、Enter で Cache zone の詳細オーバーレイが開けるようにした (closes #106)
 
 ### Security
 
