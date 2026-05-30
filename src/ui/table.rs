@@ -521,11 +521,11 @@ pub(crate) fn build_cache_rows(
     rows
 }
 
-/// Cache タブの表示ソート (HIT% 降順、`None` (分母 0) は末尾、tie は ZONE 名昇順)。
+/// Cache タブ build のベースソート (HIT% 降順、`None` (分母 0) は末尾、
+/// tie は ZONE 名昇順)。
 ///
-/// issue #30 受け入れ条件。Cache タブの動的ソート (`App::sort` 反映) は未実装の
-/// ため、`render_cache` は本関数の順をそのまま表示する (Server/Upstream のような
-/// 上位の `sort_*_rows` 再ソートが無い唯一のタブ)。
+/// HashMap 由来の非決定的順序を吸収する決定論的初期順。`render_cache` /
+/// `selected_zone` はこの上に [`sort_cache_rows`] で `App::sort` を反映する。
 pub(crate) fn sort_cache_rows_default(rows: &mut [CacheRow]) {
     rows.sort_by(|a, b| {
         match (a.hit_pct, b.hit_pct) {
@@ -538,6 +538,60 @@ pub(crate) fn sort_cache_rows_default(rows: &mut [CacheRow]) {
         }
         .then_with(|| a.zone.cmp(&b.zone))
     });
+}
+
+/// Cache 行を `SortState` に従って in-place ソートする。tie は ZONE 名昇順
+/// (Server / Upstream / Filter と同じ規約)。
+///
+/// 列ごとの比較規約:
+///
+/// - `ZONE`: 文字列順
+/// - `HitPct`: `Option<f64>` を `cmp_opt_f64` で比較 (`None` = 分母 0 は末尾)
+/// - `Miss` / `Expired` / `Stale`: `u64` 数値順
+/// - `Used`: `used_size / max_size` の比率で比較。`max_size == 0` は計算不能
+///   なので末尾に送る (絶対 used_size ではなく比率で並べる方が「ほぼ満杯の
+///   zone を上に」という運用が直感的)
+/// - `InPerSec` / `OutPerSec`: `f64` 数値順
+pub(crate) fn sort_cache_rows(rows: &mut [CacheRow], sort: SortState) {
+    let col = SortColumn::cache_at(sort.column);
+    let desc = sort.descending;
+    rows.sort_by(|a, b| {
+        let primary = match col {
+            SortColumn::Zone => cmp_str(&a.zone, &b.zone, desc),
+            SortColumn::HitPct => cmp_opt_f64(a.hit_pct, b.hit_pct, desc),
+            SortColumn::Miss => cmp_u64(a.miss, b.miss, desc),
+            SortColumn::Expired => cmp_u64(a.expired, b.expired, desc),
+            SortColumn::Stale => cmp_u64(a.stale, b.stale, desc),
+            SortColumn::Used => cmp_opt_f64(used_ratio(a), used_ratio(b), desc),
+            SortColumn::InPerSec => cmp_f64(a.bw_in_per_sec, b.bw_in_per_sec, desc),
+            SortColumn::OutPerSec => cmp_f64(a.bw_out_per_sec, b.bw_out_per_sec, desc),
+            // Cache タブに無い列 (Server / Upstream / Filter 系)。`cache_at` が範囲外を
+            // ZONE に倒すため実際には到達しないが、網羅性のため ZONE 名で安定ソートする。
+            _ => cmp_str(&a.zone, &b.zone, desc),
+        };
+        primary.then_with(|| a.zone.cmp(&b.zone))
+    });
+}
+
+/// USED 列ソート用の比率 (= `used_size / max_size`)。`max_size == 0` のときは
+/// 比率が計算できないので `None` を返し、`cmp_opt_f64` が末尾に送る。
+fn used_ratio(r: &CacheRow) -> Option<f64> {
+    if r.max_size == 0 {
+        None
+    } else {
+        Some(r.used_size as f64 / r.max_size as f64)
+    }
+}
+
+/// `u64` の昇順比較。`descending` で反転する。tie は呼び出し側で ZONE 名により
+/// 安定化する。
+fn cmp_u64(a: u64, b: u64, descending: bool) -> Ordering {
+    let ord = a.cmp(&b);
+    if descending {
+        ord.reverse()
+    } else {
+        ord
+    }
 }
 
 /// Filter タブ 1 行ぶんの確定済み描画データ。
@@ -819,8 +873,13 @@ pub fn selected_zone(app: &App) -> Option<String> {
             let idx = app.cursor.min(rows.len().checked_sub(1)?);
             Some(rows[idx].zone.clone())
         }
-        // Cache タブは issue #30 待ち。
-        Tab::Cache => None,
+        Tab::Cache => {
+            let mut rows = build_cache_rows(&now.status, prev_status, dt_secs);
+            retain_matching(&mut rows, &app.filter, |r| r.zone.as_str());
+            sort_cache_rows(&mut rows, app.sort);
+            let idx = app.cursor.min(rows.len().checked_sub(1)?);
+            Some(rows[idx].zone.clone())
+        }
     }
 }
 
@@ -1132,7 +1191,9 @@ fn render_cache(f: &mut Frame<'_>, app: &App, area: Rect) {
         }
         None => 0.0,
     };
-    let rows = build_cache_rows(&now.status, prev.map(|p| &p.status), dt_secs);
+    let mut rows = build_cache_rows(&now.status, prev.map(|p| &p.status), dt_secs);
+    retain_matching(&mut rows, &app.filter, |r| r.zone.as_str());
+    sort_cache_rows(&mut rows, app.sort);
 
     let header =
         Row::new(CACHE_HEADERS.iter().map(|h| Cell::from(*h))).style(app.theme.table_header);
@@ -2590,6 +2651,180 @@ mod tests {
         // 期待順: b(90) → a(50, tie zone昇順) → d(50) → c(None 末尾)
         let zones: Vec<&str> = rows.iter().map(|r| r.zone.as_str()).collect();
         assert_eq!(zones, vec!["b", "a", "d", "c"]);
+    }
+
+    // ---------- sort_cache_rows (issue #106) ----------
+
+    /// 4 行 cache fixture (HIT% / MISS / EXPIRED / STALE / USED / BW を分散させる)。
+    fn cache_rows_for_sort() -> Vec<CacheRow> {
+        let now = status_with_caches(
+            2000,
+            &[
+                //  name   max     used  in   out    hit  miss  exp  stale
+                ("a", 1000, 100, 10, 100, 80, 20, 5, 1), // 80%, used 10%
+                ("b", 1000, 800, 5, 50, 50, 50, 1, 2),   // 50%, used 80%
+                ("c", 1000, 500, 20, 200, 90, 10, 0, 0), // 90%, used 50%
+                ("d", 0, 0, 1, 10, 0, 0, 0, 0),          // None (分母 0), max=0
+            ],
+        );
+        let prev = status_with_caches(
+            1000,
+            &[
+                ("a", 1000, 100, 0, 0, 80, 20, 5, 1),
+                ("b", 1000, 800, 0, 0, 50, 50, 1, 2),
+                ("c", 1000, 500, 0, 0, 90, 10, 0, 0),
+                ("d", 0, 0, 0, 0, 0, 0, 0, 0),
+            ],
+        );
+        // dt = 1.0s なので bw = (in/out_bytes) そのまま
+        build_cache_rows(&now, Some(&prev), 1.0)
+    }
+
+    /// `sort_cache_rows` で列指定 → 期待順を検証するための薄いヘルパ。
+    fn sorted_zones(col: u8, descending: bool) -> Vec<String> {
+        let mut rows = cache_rows_for_sort();
+        sort_cache_rows(
+            &mut rows,
+            SortState {
+                column: col,
+                descending,
+            },
+        );
+        rows.iter().map(|r| r.zone.clone()).collect()
+    }
+
+    #[test]
+    fn sort_cache_rows_zone_column_asc_desc() {
+        // key 1 = ZONE。昇順 a,b,c,d / 降順 d,c,b,a
+        assert_eq!(sorted_zones(0, false), vec!["a", "b", "c", "d"]);
+        assert_eq!(sorted_zones(0, true), vec!["d", "c", "b", "a"]);
+    }
+
+    #[test]
+    fn sort_cache_rows_hit_pct_with_none_at_end() {
+        // key 2 = HIT%。降順は c(90) > a(80) > b(50) > d(None 末尾)。
+        assert_eq!(sorted_zones(1, true), vec!["c", "a", "b", "d"]);
+        // 昇順は b(50) < a(80) < c(90)、None は末尾固定。
+        assert_eq!(sorted_zones(1, false), vec!["b", "a", "c", "d"]);
+    }
+
+    #[test]
+    fn sort_cache_rows_miss_column_descending() {
+        // key 3 = MISS。値は b(50), a(20), c(10), d(0)。降順: b > a > c > d。
+        assert_eq!(sorted_zones(2, true), vec!["b", "a", "c", "d"]);
+    }
+
+    #[test]
+    fn sort_cache_rows_expired_column() {
+        // key 4 = EXPIRED。値は a(5), b(1), c(0), d(0)。降順: a, b, c, d (c/d は tie で zone 名)。
+        assert_eq!(sorted_zones(3, true), vec!["a", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn sort_cache_rows_stale_column() {
+        // key 5 = STALE。値は b(2), a(1), c(0), d(0)。降順: b, a, c, d。
+        assert_eq!(sorted_zones(4, true), vec!["b", "a", "c", "d"]);
+    }
+
+    #[test]
+    fn sort_cache_rows_used_column_by_ratio_not_absolute() {
+        // key 6 = USED。used_ratio: a=10%, b=80%, c=50%, d=None (max=0)。
+        // 降順: b(80%) > c(50%) > a(10%) > d(None 末尾)。
+        // (b は絶対 used_size が最大ではない: a=100, b=800, c=500 だが、比率では b)。
+        assert_eq!(sorted_zones(5, true), vec!["b", "c", "a", "d"]);
+        // 昇順では a(10%) < c(50%) < b(80%)、None は末尾固定。
+        assert_eq!(sorted_zones(5, false), vec!["a", "c", "b", "d"]);
+    }
+
+    #[test]
+    fn sort_cache_rows_in_per_sec_column() {
+        // key 7 = IN/s。bw_in = a:10, b:5, c:20, d:1。降順: c, a, b, d。
+        assert_eq!(sorted_zones(6, true), vec!["c", "a", "b", "d"]);
+    }
+
+    #[test]
+    fn sort_cache_rows_out_per_sec_column() {
+        // key 8 = OUT/s。bw_out = a:100, b:50, c:200, d:10。降順: c, a, b, d。
+        assert_eq!(sorted_zones(7, true), vec!["c", "a", "b", "d"]);
+    }
+
+    #[test]
+    fn sort_cache_rows_out_of_range_column_falls_back_to_zone() {
+        // Cache タブには key 9 列が無い (cache_at が範囲外を ZONE に倒すフォールバック)。
+        // 結果は ZONE 列ソートと同じになる。
+        assert_eq!(sorted_zones(8, false), sorted_zones(0, false));
+    }
+
+    // ---------- render_cache が App::sort を反映すること (issue #106) ----------
+
+    #[test]
+    fn render_cache_reflects_app_sort_state_for_miss_column() {
+        // key 3 = MISS 降順。最初の行に MISS 最大の zone が来ること。
+        let mut app = App::new();
+        app.on_fetch_ok(status_with_caches(
+            2000,
+            &[
+                ("alpha", 1024, 0, 0, 0, 0, 5, 0, 0),
+                ("zulu", 1024, 0, 0, 0, 0, 100, 0, 0),
+            ],
+        ));
+        app.active_tab = Tab::Cache;
+        app.sort = SortState {
+            column: 2, // MISS
+            descending: true,
+        };
+        let out = draw(&app, 100, 5);
+        // ヘッダ行を除いた最初の data 行に zulu が来ること。
+        let lines: Vec<&str> = out.lines().collect();
+        let data_line = lines[2]; // [0]title? no actually [0]=header, [1]=zone row? let me trust the contains check
+                                  // 行に zulu が alpha より前に出ていればよい (簡易版: zulu の出現 index が alpha より先)
+        let zulu_pos = out.find("zulu").expect("zulu present");
+        let alpha_pos = out.find("alpha").expect("alpha present");
+        assert!(
+            zulu_pos < alpha_pos,
+            "MISS desc で zulu(100) が alpha(5) より上に来るべき:\n{out}\n(data_line: {data_line})"
+        );
+    }
+
+    #[test]
+    fn render_cache_applies_filter() {
+        // フィルタ "demo" を入れると、demo_* のみ残ること。
+        let mut app = App::new();
+        app.on_fetch_ok(status_with_caches(
+            2000,
+            &[
+                ("demo_cache", 1024, 0, 0, 0, 5, 0, 0, 0),
+                ("prod_cache", 1024, 0, 0, 0, 5, 0, 0, 0),
+            ],
+        ));
+        app.active_tab = Tab::Cache;
+        app.filter = "demo".to_string();
+        let out = draw(&app, 100, 5);
+        assert!(out.contains("demo_cache"), "demo_cache missing:\n{out}");
+        assert!(
+            !out.contains("prod_cache"),
+            "prod_cache should be filtered out:\n{out}"
+        );
+    }
+
+    // ---------- selected_zone が Cache タブで動くこと (issue #106) ----------
+
+    #[test]
+    fn selected_zone_returns_cache_zone_at_cursor() {
+        // Cache タブで HIT% 降順なら cursor=0 は最高 hit% の zone。
+        let mut app = App::new();
+        app.on_fetch_ok(status_with_caches(
+            2000,
+            &[
+                ("low", 1024, 0, 0, 0, 50, 50, 0, 0), // 50%
+                ("high", 1024, 0, 0, 0, 99, 1, 0, 0), // 99%
+            ],
+        ));
+        app.active_tab = Tab::Cache;
+        app.cursor = 0;
+        assert_eq!(selected_zone(&app).as_deref(), Some("high"));
+        app.cursor = 1;
+        assert_eq!(selected_zone(&app).as_deref(), Some("low"));
     }
 
     // ---------- render (Cache) ----------
