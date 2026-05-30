@@ -145,11 +145,9 @@ jobs:
         include:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
-            deb_arch: amd64
             rpm_arch: x86_64
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
-            deb_arch: arm64
             rpm_arch: aarch64
     runs-on: ${{ matrix.os }}
     steps:
@@ -173,10 +171,10 @@ jobs:
           name: vozltop-${{ matrix.target }}
           path: dist
 
-      - name: tarball からバイナリを展開して target/release/ に配置
-        # cargo-deb / cargo-generate-rpm はデフォルトで target/<target>/release/<bin>
-        # を見るが、本 workflow ではビルド済みアーカイブから取り出して
-        # target/release/ に置き、Cargo.toml の metadata と整合させる。
+      - name: tarball からバイナリを展開して target/<triple>/release/ に配置
+        # cargo-deb 3.x は `--target <triple>` 指定時に
+        # `target/<triple>/release/<bin>` を参照し、出力も `target/<triple>/debian/`
+        # に置く。cargo-generate-rpm も `--target` で同様に動く。
         env:
           TARGET: ${{ matrix.target }}
         run: |
@@ -184,38 +182,42 @@ jobs:
           archive="$(ls dist/vozltop-*-${TARGET}.tar.gz)"
           tar xzf "${archive}" -C dist
           staging="$(basename "${archive%.tar.gz}")"
-          mkdir -p "target/release"
-          cp "dist/${staging}/vozltop" "target/release/vozltop"
-          chmod 755 "target/release/vozltop"
+          mkdir -p "target/${TARGET}/release"
+          cp "dist/${staging}/vozltop" "target/${TARGET}/release/vozltop"
+          chmod 755 "target/${TARGET}/release/vozltop"
 
       - name: cargo deb を実行
         env:
-          DEB_ARCH: ${{ matrix.deb_arch }}
+          TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
           # --no-build / --no-strip: 既存バイナリをそのまま使う (再ビルド回避)。
-          # 出力名は cargo-deb 既定の `vozltop_<version>-<revision>_<arch>.deb`
-          # (Debian convention)。バージョン抜きの URL が欲しい場合は GitHub の
-          # `latest` API で list して dl する script を使う想定。
-          cargo deb --no-build --no-strip --target-arch "${DEB_ARCH}"
-          ls -la target/debian/
+          # --target <triple>: cargo-deb 3.x はこのフラグで binary 探索パスと
+          # Architecture を同時に決める (旧 --target-arch は廃止)。
+          # 出力名は `vozltop_<version>-<revision>_<arch>.deb` (Debian convention)。
+          cargo deb --no-build --no-strip --target "${TARGET}"
+          ls -la "target/${TARGET}/debian/"
 
       - name: cargo generate-rpm を実行
         env:
+          TARGET: ${{ matrix.target }}
           RPM_ARCH: ${{ matrix.rpm_arch }}
         run: |
           set -euo pipefail
-          # 出力名は cargo-generate-rpm 既定の
-          # `vozltop-<version>-<release>.<arch>.rpm` (RPM convention)。
-          cargo generate-rpm --arch "${RPM_ARCH}"
-          ls -la target/generate-rpm/
+          # --target <triple> で binary 探索パスを `target/<triple>/release/` に
+          # 揃え、--arch で rpm の Architecture フィールドを上書きする。
+          # 出力名は `vozltop-<version>-<release>.<arch>.rpm` (RPM convention)。
+          cargo generate-rpm --target "${TARGET}" --arch "${RPM_ARCH}"
+          ls -la "target/${TARGET}/generate-rpm/"
 
       - name: deb / rpm の SHA256
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
           # glob で実ファイル名を拾う (cargo-deb / cargo-generate-rpm が version を
           # 名前に埋めるため固定 path を書かない)。
-          for f in target/debian/vozltop_*.deb target/generate-rpm/vozltop-*.rpm; do
+          for f in "target/${TARGET}/debian/"vozltop_*.deb "target/${TARGET}/generate-rpm/"vozltop-*.rpm; do
             shasum -a 256 "${f}" > "${f}.sha256"
           done
 
@@ -224,10 +226,10 @@ jobs:
         with:
           name: vozltop-packages-${{ matrix.target }}
           path: |
-            target/debian/vozltop_*.deb
-            target/debian/vozltop_*.deb.sha256
-            target/generate-rpm/vozltop-*.rpm
-            target/generate-rpm/vozltop-*.rpm.sha256
+            target/${{ matrix.target }}/debian/vozltop_*.deb
+            target/${{ matrix.target }}/debian/vozltop_*.deb.sha256
+            target/${{ matrix.target }}/generate-rpm/vozltop-*.rpm
+            target/${{ matrix.target }}/generate-rpm/vozltop-*.rpm.sha256
           if-no-files-found: error
           retention-days: 7
 
