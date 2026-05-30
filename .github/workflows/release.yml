@@ -11,10 +11,16 @@ name: Release
 # SHA256SUMS を生成する。reqwest は `rustls-tls-native-roots` を使うため
 # OpenSSL ヘッダが要らず、`cross` 不要で素の cargo + musl ツールチェインで通る。
 #
+# 本 workflow が出力するアーティファクト (Release に添付):
+#   - vozltop-<version>-<target>.tar.gz × 3 (linux x86_64/aarch64 musl, macos aarch64)
+#   - SHA256SUMS
+#   - vozltop_<version>_<arch>.deb × 2 (linux x86_64/aarch64、issue #49)
+#   - vozltop-<version>-1.<arch>.rpm × 2 (linux x86_64/aarch64、issue #49)
+#
 # Phase 2 残タスク (本 PR スコープ外、別 issue で対応):
 #   - minisign 署名 (鍵管理が必要)
-#   - Homebrew tap 自動更新
-#   - .deb / .rpm パッケージ生成
+#   - Homebrew tap (astail/homebrew-tap) の自動更新 (本リポでは
+#     `packaging/homebrew/vozltop.rb.template` を staging のみ、tap 反映は手動)
 
 on:
   push:
@@ -123,9 +129,112 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # ---------------------------------------------------------------------------
+  # Linux パッケージ (issue #49)。build job で生成した release バイナリから
+  # cargo-deb / cargo-generate-rpm で .deb / .rpm を作る。
+  #
+  # build とは別 matrix で動かし、Linux 2 ターゲット (x86_64-musl / aarch64-musl)
+  # のみで実行する。macOS は brew tap (本リポジトリ範囲外、別途) で配布する。
+  # ---------------------------------------------------------------------------
+  packaging:
+    name: packaging (${{ matrix.target }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            deb_arch: amd64
+            rpm_arch: x86_64
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            deb_arch: arm64
+            rpm_arch: aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo-deb / cargo-generate-rpm を導入
+        # `--locked` で再現性を確保。バージョンはローカル (macOS aarch64) で
+        # `cargo deb --no-build --no-strip` の dry-run まで通したものに揃える。
+        # 上げる際は Cargo.toml の [package.metadata.deb] / [.generate-rpm]
+        # スキーマ互換を Release tag push 前に動作確認すること。
+        run: |
+          set -euo pipefail
+          cargo install --locked cargo-deb@3.7.0
+          cargo install --locked cargo-generate-rpm@0.16.0
+
+      - name: build 済みバイナリをダウンロード
+        uses: actions/download-artifact@v4
+        with:
+          name: vozltop-${{ matrix.target }}
+          path: dist
+
+      - name: tarball からバイナリを展開して target/release/ に配置
+        # cargo-deb / cargo-generate-rpm はデフォルトで target/<target>/release/<bin>
+        # を見るが、本 workflow ではビルド済みアーカイブから取り出して
+        # target/release/ に置き、Cargo.toml の metadata と整合させる。
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          archive="$(ls dist/vozltop-*-${TARGET}.tar.gz)"
+          tar xzf "${archive}" -C dist
+          staging="$(basename "${archive%.tar.gz}")"
+          mkdir -p "target/release"
+          cp "dist/${staging}/vozltop" "target/release/vozltop"
+          chmod 755 "target/release/vozltop"
+
+      - name: cargo deb を実行
+        env:
+          DEB_ARCH: ${{ matrix.deb_arch }}
+        run: |
+          set -euo pipefail
+          # --no-build / --no-strip: 既存バイナリをそのまま使う (再ビルド回避)。
+          # --variant linux: 既定 variant のまま (Cargo.toml の [package.metadata.deb])。
+          cargo deb --no-build --no-strip --target-arch "${DEB_ARCH}" \
+            --output "target/debian/vozltop_${DEB_ARCH}.deb"
+          ls -la target/debian/
+
+      - name: cargo generate-rpm を実行
+        env:
+          RPM_ARCH: ${{ matrix.rpm_arch }}
+        run: |
+          set -euo pipefail
+          # --payload-compress none: rpm の圧縮を素直にする (debug 用 size 比較が容易)。
+          cargo generate-rpm --arch "${RPM_ARCH}" \
+            --output "target/generate-rpm/vozltop-${RPM_ARCH}.rpm"
+          ls -la target/generate-rpm/
+
+      - name: deb / rpm の SHA256
+        env:
+          DEB_ARCH: ${{ matrix.deb_arch }}
+          RPM_ARCH: ${{ matrix.rpm_arch }}
+        run: |
+          set -euo pipefail
+          shasum -a 256 "target/debian/vozltop_${DEB_ARCH}.deb" \
+            > "target/debian/vozltop_${DEB_ARCH}.deb.sha256"
+          shasum -a 256 "target/generate-rpm/vozltop-${RPM_ARCH}.rpm" \
+            > "target/generate-rpm/vozltop-${RPM_ARCH}.rpm.sha256"
+
+      - name: パッケージを artifact 化
+        uses: actions/upload-artifact@v4
+        with:
+          name: vozltop-packages-${{ matrix.target }}
+          path: |
+            target/debian/vozltop_*.deb
+            target/debian/vozltop_*.deb.sha256
+            target/generate-rpm/vozltop-*.rpm
+            target/generate-rpm/vozltop-*.rpm.sha256
+          if-no-files-found: error
+          retention-days: 7
+
   release:
     name: GitHub Release を作成
-    needs: build
+    needs: [build, packaging]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -137,11 +246,25 @@ jobs:
         working-directory: dist
         run: |
           set -euo pipefail
-          # 個別の *.sha256 を 1 ファイルにまとめる。verify は
-          #   shasum -a 256 -c SHA256SUMS
-          # で全アーカイブを検証できる。
-          cat *.sha256 > SHA256SUMS
-          rm -f *.sha256
+          # 個別の *.sha256 (tarball + deb + rpm) を 1 ファイルにまとめる。
+          # verify は `shasum -a 256 -c SHA256SUMS` で全アーカイブを検証できる。
+          # download-artifact が deb/rpm を target/debian や target/generate-rpm
+          # 配下に展開する可能性があるため、相対パスを除去して basename だけで揃える。
+          : > SHA256SUMS
+          while read -r line; do
+            # 行は `<hash>  <path>` 形式。`<path>` の basename のみ残す。
+            hash="${line%% *}"
+            path="${line##* }"
+            base="$(basename "${path}")"
+            echo "${hash}  ${base}" >> SHA256SUMS
+          done < <(find . -name '*.sha256' -exec cat {} \;)
+          find . -name '*.sha256' -delete
+          # deb / rpm が target/ 配下にある場合は dist/ 直下に持ってくる
+          find . \( -name 'vozltop_*.deb' -o -name 'vozltop-*.rpm' \) \
+            -exec mv -t . {} + 2>/dev/null || true
+          rmdir target/debian target/generate-rpm target 2>/dev/null || true
+          echo "--- dist/ ---"
+          ls -la
           echo "--- SHA256SUMS ---"
           cat SHA256SUMS
 
@@ -157,4 +280,6 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             dist/vozltop-*.tar.gz
+            dist/vozltop_*.deb
+            dist/vozltop-*.rpm
             dist/SHA256SUMS
