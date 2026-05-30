@@ -14,8 +14,8 @@ name: Release
 # 本 workflow が出力するアーティファクト (Release に添付):
 #   - vozltop-<version>-<target>.tar.gz × 3 (linux x86_64/aarch64 musl, macos aarch64)
 #   - SHA256SUMS
-#   - vozltop_<version>_<arch>.deb × 2 (linux x86_64/aarch64、issue #49)
-#   - vozltop-<version>-1.<arch>.rpm × 2 (linux x86_64/aarch64、issue #49)
+#   - vozltop_<version>-1_<amd64|arm64>.deb × 2 (cargo-deb 既定名、issue #49)
+#   - vozltop-<version>-1.<x86_64|aarch64>.rpm × 2 (cargo-generate-rpm 既定名、issue #49)
 #
 # Phase 2 残タスク (本 PR スコープ外、別 issue で対応):
 #   - minisign 署名 (鍵管理が必要)
@@ -194,9 +194,10 @@ jobs:
         run: |
           set -euo pipefail
           # --no-build / --no-strip: 既存バイナリをそのまま使う (再ビルド回避)。
-          # --variant linux: 既定 variant のまま (Cargo.toml の [package.metadata.deb])。
-          cargo deb --no-build --no-strip --target-arch "${DEB_ARCH}" \
-            --output "target/debian/vozltop_${DEB_ARCH}.deb"
+          # 出力名は cargo-deb 既定の `vozltop_<version>-<revision>_<arch>.deb`
+          # (Debian convention)。バージョン抜きの URL が欲しい場合は GitHub の
+          # `latest` API で list して dl する script を使う想定。
+          cargo deb --no-build --no-strip --target-arch "${DEB_ARCH}"
           ls -la target/debian/
 
       - name: cargo generate-rpm を実行
@@ -204,21 +205,19 @@ jobs:
           RPM_ARCH: ${{ matrix.rpm_arch }}
         run: |
           set -euo pipefail
-          # --payload-compress none: rpm の圧縮を素直にする (debug 用 size 比較が容易)。
-          cargo generate-rpm --arch "${RPM_ARCH}" \
-            --output "target/generate-rpm/vozltop-${RPM_ARCH}.rpm"
+          # 出力名は cargo-generate-rpm 既定の
+          # `vozltop-<version>-<release>.<arch>.rpm` (RPM convention)。
+          cargo generate-rpm --arch "${RPM_ARCH}"
           ls -la target/generate-rpm/
 
       - name: deb / rpm の SHA256
-        env:
-          DEB_ARCH: ${{ matrix.deb_arch }}
-          RPM_ARCH: ${{ matrix.rpm_arch }}
         run: |
           set -euo pipefail
-          shasum -a 256 "target/debian/vozltop_${DEB_ARCH}.deb" \
-            > "target/debian/vozltop_${DEB_ARCH}.deb.sha256"
-          shasum -a 256 "target/generate-rpm/vozltop-${RPM_ARCH}.rpm" \
-            > "target/generate-rpm/vozltop-${RPM_ARCH}.rpm.sha256"
+          # glob で実ファイル名を拾う (cargo-deb / cargo-generate-rpm が version を
+          # 名前に埋めるため固定 path を書かない)。
+          for f in target/debian/vozltop_*.deb target/generate-rpm/vozltop-*.rpm; do
+            shasum -a 256 "${f}" > "${f}.sha256"
+          done
 
       - name: パッケージを artifact 化
         uses: actions/upload-artifact@v4

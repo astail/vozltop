@@ -50,17 +50,24 @@ cargo install vozltop
 
 ### Debian / Ubuntu (.deb)
 
+ファイル名は `vozltop_<version>-1_<amd64|arm64>.deb` 形式 (Debian convention)。
+[Releases ページ](https://github.com/astail/vozltop/releases/latest) から該当
+バージョン / アーキテクチャの `.deb` をダウンロード:
+
 ```bash
-# x86_64 / arm64 のうち適切なものをダウンロード
-curl -LO https://github.com/astail/vozltop/releases/latest/download/vozltop_amd64.deb
-sudo dpkg -i vozltop_amd64.deb
+# 例: v0.1.0 / amd64
+curl -LO https://github.com/astail/vozltop/releases/download/v0.1.0/vozltop_0.1.0-1_amd64.deb
+sudo dpkg -i vozltop_0.1.0-1_amd64.deb
 ```
 
 ### Fedora / RHEL (.rpm)
 
+ファイル名は `vozltop-<version>-1.<x86_64|aarch64>.rpm` 形式 (RPM convention)。
+
 ```bash
-curl -LO https://github.com/astail/vozltop/releases/latest/download/vozltop-x86_64.rpm
-sudo rpm -i vozltop-x86_64.rpm
+# 例: v0.1.0 / x86_64
+curl -LO https://github.com/astail/vozltop/releases/download/v0.1.0/vozltop-0.1.0-1.x86_64.rpm
+sudo rpm -i vozltop-0.1.0-1.x86_64.rpm
 ```
 
 ### Homebrew (macOS / Linux)
