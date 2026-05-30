@@ -33,6 +33,7 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 ### Fixed
 
 - `Tab` / `Shift+Tab` で zone 種別タブ (Server / Upstream / Cache / Filter) を循環できるようにした。これまでヘルプ / footer は案内していたが key handler 側が未実装で Server タブから動かせなかった (closes #104)
+- ヘッダの RPS / BW in / BW out sparkline が常時空のままだった問題を修正。`App::on_fetch_ok` が `derived::compute(prev, now)` を呼んでおらず `History::push_derived` も発火しなかったため、production 上で sparkline 3 本と現値表示が永続的に 0 になっていた。直前 snapshot との差分から派生メトリクスを算出し、serverZones を集計した合算値で sparkline を更新するよう修正 (closes #105)
 
 ### Security
 

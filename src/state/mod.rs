@@ -407,16 +407,34 @@ impl App {
 
     /// fetch 成功時のハンドラ。
     ///
+    /// - 直前 snapshot との差分で派生メトリクスを算出し `Snapshot.derived` に格納
     /// - `history` に snapshot を push (rolling buffer は自動で 120 件にキャップ)
+    /// - 派生が取れた tick (= prev 在り、`now_msec > prev.now_msec`) は、
+    ///   serverZones を集計した RPS / BW 合算値をヘッダ sparkline 用バッファに
+    ///   `push_derived` する (issue #105 修正前は呼ばれず、sparkline が常時空だった)
     /// - `status` を `Running` に
     /// - `error_banner` をクリア
     pub fn on_fetch_ok(&mut self, status: VtsStatus) {
+        // `latest()` は push 前なので「prev (= 前 snapshot)」を返す。初 tick は None。
+        let derived = self
+            .history
+            .latest()
+            .and_then(|prev| derived::compute(&prev.status, &status));
+
         let snapshot = Snapshot {
             at: Instant::now(),
             status,
-            derived: DerivedSnapshot::default(),
+            derived: derived.clone().unwrap_or_default(),
         };
         self.history.push(snapshot);
+
+        // sparkline は `Some` (= prev 在り && dt > 0) のときだけ積む。
+        // 初 tick / nginx 再起動 (now < prev) は skip して既存の履歴を保つ。
+        if let Some(d) = derived {
+            let (rps, bw_in, bw_out) = d.server_totals();
+            self.history.push_derived(rps, bw_in, bw_out);
+        }
+
         self.status = AppStatus::Running;
         self.error_banner = None;
     }
@@ -951,5 +969,95 @@ mod tests {
 
         app.prev_tab();
         assert_eq!(app.filter, "api", "prev_tab も filter を維持する");
+    }
+
+    // ---------- sparkline 連携 (issue #105) ----------
+
+    /// `request_counter` / `in_bytes` / `out_bytes` 入りの 1-zone snapshot を作る。
+    fn status_with_one_zone(now_msec: u64, rc: u64, ib: u64, ob: u64) -> VtsStatus {
+        let raw = serde_json::json!({
+            "hostName": "h", "nginxVersion": "1", "moduleVersion": "v",
+            "loadMsec": 0u64, "nowMsec": now_msec,
+            "connections": {
+                "active": 0, "reading": 0, "writing": 0,
+                "waiting": 0, "accepted": 0, "handled": 0, "requests": 0
+            },
+            "serverZones": {
+                "api": {
+                    "requestCounter": rc, "inBytes": ib, "outBytes": ob,
+                    "responses": {
+                        "1xx": 0, "2xx": rc, "3xx": 0, "4xx": 0, "5xx": 0,
+                        "miss": 0, "bypass": 0, "expired": 0, "stale": 0,
+                        "updating": 0, "revalidated": 0, "hit": 0, "scarce": 0
+                    },
+                    "requestMsec": 0, "requestMsecCounter": 0,
+                    "requestBuckets": { "msecs": [], "counters": [] }
+                }
+            }
+        });
+        serde_json::from_value(raw).unwrap()
+    }
+
+    #[test]
+    fn first_fetch_does_not_push_to_sparkline() {
+        // 初 tick (prev 不在) は差分が取れないので sparkline は空のまま。
+        let mut app = App::new();
+        app.on_fetch_ok(status_with_one_zone(1_000, 100, 0, 0));
+        assert!(
+            app.history.rps_history().is_empty(),
+            "初 tick で sparkline は積まない"
+        );
+        assert!(app.history.bw_in_history().is_empty());
+        assert!(app.history.bw_out_history().is_empty());
+    }
+
+    #[test]
+    fn second_fetch_pushes_aggregated_totals_to_sparkline() {
+        // 1 秒間に rc が +100、in_bytes が +10240 (= 10 KB)、out_bytes が +102400 で
+        //   rps = 100 / 1.0 = 100
+        //   bw_in = 10240 / 1.0 = 10240
+        //   bw_out = 102400 / 1.0 = 102400
+        let mut app = App::new();
+        app.on_fetch_ok(status_with_one_zone(1_000, 0, 0, 0));
+        app.on_fetch_ok(status_with_one_zone(2_000, 100, 10_240, 102_400));
+
+        assert_eq!(app.history.rps_history().len(), 1);
+        assert_eq!(*app.history.rps_history().back().unwrap(), 100);
+        assert_eq!(*app.history.bw_in_history().back().unwrap(), 10_240);
+        assert_eq!(*app.history.bw_out_history().back().unwrap(), 102_400);
+    }
+
+    #[test]
+    fn nginx_restart_does_not_push_to_sparkline() {
+        // now_msec が prev より前 (= 再起動) のときは compute が None を返すので
+        // sparkline は積まれない。前 push 分だけ残る。
+        let mut app = App::new();
+        app.on_fetch_ok(status_with_one_zone(1_000, 0, 0, 0));
+        app.on_fetch_ok(status_with_one_zone(2_000, 50, 0, 0)); // ここで 1 件積まれる
+        assert_eq!(app.history.rps_history().len(), 1);
+
+        // 再起動: now_msec が巻き戻る
+        app.on_fetch_ok(status_with_one_zone(500, 50, 0, 0));
+        assert_eq!(
+            app.history.rps_history().len(),
+            1,
+            "再起動時は sparkline を積み増さない"
+        );
+    }
+
+    #[test]
+    fn snapshot_derived_is_populated_after_second_fetch() {
+        // Snapshot.derived も DerivedSnapshot::default() で固定化されたままに
+        // ならない (回帰防止: バグの本質は derived が常に default だったこと)。
+        let mut app = App::new();
+        app.on_fetch_ok(status_with_one_zone(1_000, 0, 0, 0));
+        app.on_fetch_ok(status_with_one_zone(2_000, 200, 0, 0));
+
+        let latest = app.history.latest().unwrap();
+        assert_eq!(latest.derived.dt_ms, 1_000);
+        assert!(
+            latest.derived.server.contains_key("api"),
+            "derived.server に zone が入る (default ではない)"
+        );
     }
 }

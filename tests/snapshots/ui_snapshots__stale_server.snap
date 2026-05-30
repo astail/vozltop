@@ -4,8 +4,8 @@ expression: render_to_string(&app)
 ---
 "[Stale]  consecutive failures: 2                                                "
 "Conn ████████1/1 ████████  active 1  reading 0  writing 1  waiting 0            "
-"RPS                                                    0/s          5xx 0.00%   "
-"in                          0 B/s       out                         0 B/s       "
+"RPS  █                                                 1020/s       5xx 0.00%   "
+"in  █                       89.0 KB/s   out █                       168.0 KB/s  "
 "ZONE             RPS      2xx%    4xx%    5xx%    p95      IN/s       OUT/s     "
 "*                510      100.0%  0.0%    0.0%    ~0ms     44.5 KB/s  84.0 KB/s "
 "_                180      100.0%  0.0%    0.0%    ~0ms     17.2 KB/s  29.7 KB/s "
