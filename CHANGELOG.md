@@ -11,6 +11,10 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-05-31
+
+初回リリース。`htop` ライクな TUI で nginx-module-vts JSON をリアルタイム可視化する CLI。
+
 ### Added
 
 - TOML 設定ファイル (`~/.config/vozltop/config.toml` 他 XDG ベース) と `vozltop @<alias>` 形式のエイリアス起動をサポート。`[hosts.<alias>]` セクションに URL / user / interval / headers / insecure / no_color / alert 閾値を書いて再利用できる。`--config <path>` フラグまたは `$VOZLTOP_CONFIG` 環境変数で明示指定も可能。CLI フラグは config を上書き (CLI > config[hosts.<alias>] > 組み込み既定)。keyring 連携は本 PR スコープ外で、password は config に平文 (chmod 0600 推奨) (closes #46)
@@ -46,4 +50,5 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 - argv に password / Bearer トークンが平文で乗っていると起動時に stderr で警告するようにした (`ps` 経由の漏洩を防ぐ案内) (#40)
 - URL に埋め込んだ credentials (`https://user:pass@host/...`) を `detect_argv_secret_in` の警告対象に追加。これまで `--user` / `--header` しか検査しておらず、URL 内 password が `ps` で漏洩しても無警告だった。URL 形式は `VOZLTOP_PASSWORD` でも上書きされないため env がセットされていても警告する (closes #107)
 
-[unreleased]: https://github.com/astail/vozltop/commits/main
+[unreleased]: https://github.com/astail/vozltop/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/astail/vozltop/releases/tag/v0.1.0
