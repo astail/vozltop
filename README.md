@@ -30,12 +30,53 @@ nginx-module-vts は nginx の vhost / upstream / cache 単位のトラフィッ
 
 ## インストール
 
+### crates.io から (Rust toolchain が必要)
+
 ```bash
-# Rust toolchain (stable) が必要
 cargo install vozltop
 ```
 
-リリースバイナリは Phase 2 で提供予定。
+### バイナリ release
+
+[GitHub Releases](https://github.com/astail/vozltop/releases) から OS / アーキテクチャ別の tarball をダウンロード:
+
+| OS | アーキテクチャ | アーカイブ名 |
+|----|---------------|-------------|
+| Linux (musl, glibc 不要) | x86_64 | `vozltop-<version>-x86_64-unknown-linux-musl.tar.gz` |
+| Linux (musl) | aarch64 | `vozltop-<version>-aarch64-unknown-linux-musl.tar.gz` |
+| macOS (Apple Silicon) | aarch64 | `vozltop-<version>-aarch64-apple-darwin.tar.gz` |
+
+検証は `SHA256SUMS` ファイルを同じディレクトリに置いて `shasum -a 256 -c SHA256SUMS` で行えます。
+
+### Debian / Ubuntu (.deb)
+
+ファイル名は `vozltop_<version>-1_<amd64|arm64>.deb` 形式 (Debian convention)。
+[Releases ページ](https://github.com/astail/vozltop/releases/latest) から該当
+バージョン / アーキテクチャの `.deb` をダウンロード:
+
+```bash
+# 例: v0.1.0 / amd64
+curl -LO https://github.com/astail/vozltop/releases/download/v0.1.0/vozltop_0.1.0-1_amd64.deb
+sudo dpkg -i vozltop_0.1.0-1_amd64.deb
+```
+
+### Fedora / RHEL (.rpm)
+
+ファイル名は `vozltop-<version>-1.<x86_64|aarch64>.rpm` 形式 (RPM convention)。
+
+```bash
+# 例: v0.1.0 / x86_64
+curl -LO https://github.com/astail/vozltop/releases/download/v0.1.0/vozltop-0.1.0-1.x86_64.rpm
+sudo rpm -i vozltop-0.1.0-1.x86_64.rpm
+```
+
+### Homebrew (macOS / Linux)
+
+```bash
+brew install astail/tap/vozltop
+```
+
+> Homebrew tap は `astail/homebrew-tap` で別管理されています。formula テンプレートは本リポジトリの `packaging/homebrew/vozltop.rb.template` を参照してください。
 
 ## 使い方
 

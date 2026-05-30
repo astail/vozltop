@@ -1,0 +1,59 @@
+# Homebrew formula テンプレート (issue #49)。
+#
+# 本ファイルは `astail/homebrew-tap` リポジトリ (別管理) に `Formula/vozltop.rb`
+# として配置されることを想定したテンプレートです。release ごとに以下の
+# プレースホルダを実値で書き換えてからコピーしてください:
+#
+#   {{VERSION}}                    0.1.0  (release タグから `v` を除いたもの)
+#   {{TARBALL_URL_MACOS_AARCH64}}  https://github.com/astail/vozltop/releases/download/v{{VERSION}}/vozltop-{{VERSION}}-aarch64-apple-darwin.tar.gz
+#   {{SHA256_MACOS_AARCH64}}       macOS aarch64 tarball の SHA256
+#   {{TARBALL_URL_LINUX_X86_64}}   https://github.com/astail/vozltop/releases/download/v{{VERSION}}/vozltop-{{VERSION}}-x86_64-unknown-linux-musl.tar.gz
+#   {{SHA256_LINUX_X86_64}}        linux x86_64 tarball の SHA256
+#   {{TARBALL_URL_LINUX_AARCH64}}  https://github.com/astail/vozltop/releases/download/v{{VERSION}}/vozltop-{{VERSION}}-aarch64-unknown-linux-musl.tar.gz
+#   {{SHA256_LINUX_AARCH64}}       linux aarch64 tarball の SHA256
+#
+# SHA256 は GitHub Release に添付されている SHA256SUMS から取得できます。
+#
+# 反映方法 (手動、Phase 2 で自動化候補):
+#   1. release workflow が完走したら、添付された tarball の SHA256 を SHA256SUMS から拾う
+#   2. 本テンプレートをコピーしプレースホルダを実値に置換
+#   3. `astail/homebrew-tap` リポジトリの `Formula/vozltop.rb` を更新する PR を作成
+#   4. merge 後 `brew install astail/tap/vozltop` で配布可能
+class Vozltop < Formula
+  desc "htop-like real-time TUI for nginx-module-vts"
+  homepage "https://github.com/astail/vozltop"
+  version "{{VERSION}}"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "{{TARBALL_URL_MACOS_AARCH64}}"
+      sha256 "{{SHA256_MACOS_AARCH64}}"
+    end
+  end
+
+  on_linux do
+    on_intel do
+      url "{{TARBALL_URL_LINUX_X86_64}}"
+      sha256 "{{SHA256_LINUX_X86_64}}"
+    end
+
+    on_arm do
+      url "{{TARBALL_URL_LINUX_AARCH64}}"
+      sha256 "{{SHA256_LINUX_AARCH64}}"
+    end
+  end
+
+  def install
+    # tarball 内の staging ディレクトリから vozltop バイナリを取り出す。
+    # release workflow が `vozltop-<version>-<target>/` ディレクトリ構造で
+    # tar 化しているため、Dir.glob で 1 階層下を見る。
+    bin.install Dir["vozltop-*/vozltop"].first => "vozltop"
+  end
+
+  test do
+    # 起動して `--version` を出力できることだけ確認する。
+    # 実際の VTS endpoint への接続はテスト環境に依存するためここでは行わない。
+    assert_match version.to_s, shell_output("#{bin}/vozltop --version")
+  end
+end

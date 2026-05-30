@@ -13,6 +13,9 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 
 ### Added
 
+- Linux パッケージ (`.deb` / `.rpm`) を tag push 時に GitHub Release へ自動添付するよう `release.yml` に `packaging` job を追加。`cargo-deb` と `cargo-generate-rpm` を利用し、`x86_64` / `aarch64` の 2 アーキテクチャをサポート。あわせて Cargo.toml に `[package.metadata.deb]` / `[package.metadata.generate-rpm]` を追加 (closes #49)
+- Homebrew formula のテンプレート `packaging/homebrew/vozltop.rb.template` を staging。`astail/homebrew-tap` への反映は手動 (Phase 2 で自動化候補)
+- README にインストール手順 (tarball / .deb / .rpm / Homebrew) を追加
 - 依存ライブラリの major bump 追従手順を `docs/DEPENDENCY_POLICY.md` に明文化 (#13)
 - `--user user:-` で stdin から password を読み取れるようにした (#40)
 - `--header @path/to/file` でファイルからヘッダ 1 行を読み込めるようにした (#40)

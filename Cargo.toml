@@ -12,6 +12,41 @@ categories = ["command-line-utilities"]
 [package.metadata.docs.rs]
 all-features = true
 
+# ---------------------------------------------------------------------------
+# Linux パッケージング (issue #49)。release workflow (.github/workflows/release.yml)
+# が tag push 時に cargo-deb / cargo-generate-rpm を呼んで .deb / .rpm を生成し、
+# GitHub Release に添付する。
+# ---------------------------------------------------------------------------
+
+# cargo-deb: https://github.com/kornelski/cargo-deb
+# `cargo deb --no-build --target <triple>` で pre-built バイナリから .deb を作る。
+[package.metadata.deb]
+maintainer = "astail <kiyomillefeuille@gmail.com>"
+copyright = "2026, astail <kiyomillefeuille@gmail.com>"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+vozltop is an htop-like real-time TUI for nginx-module-vts. \
+It fetches the nginx /status/format/json endpoint at a configurable interval \
+and visualizes server / upstream / cache zones with sortable tables, \
+filters, and p95 latency from request histograms."""
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/vozltop", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/vozltop/README.md", "644"],
+    ["CHANGELOG.md", "usr/share/doc/vozltop/CHANGELOG.md", "644"],
+]
+
+# cargo-generate-rpm: https://github.com/cat-in-136/cargo-generate-rpm
+# `cargo generate-rpm --target <triple>` で .rpm を作る。
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/vozltop", dest = "/usr/bin/vozltop", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/vozltop/README.md", mode = "644", doc = true },
+    { source = "CHANGELOG.md", dest = "/usr/share/doc/vozltop/CHANGELOG.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/doc/vozltop/LICENSE", mode = "644", doc = true },
+]
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 color-eyre = "0.6"
