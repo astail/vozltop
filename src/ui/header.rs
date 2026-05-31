@@ -1,4 +1,4 @@
-//! TUI 上段 3 行のヘッダ widget (issue #27)。
+//! TUI 上段 4 行のヘッダ widget (issue #27 / #119)。
 //!
 //! ## レイアウト
 //!
@@ -8,7 +8,8 @@
 //! ├────────────────────────────────────────────────────────────────┤
 //! │ Conn  [█████░░░░] 42/120   active 42  reading 3  writing 5  …  │  <- 行 1
 //! │ RPS   ▁▂▃▅▇▇▆▄▂▁                                       1234/s  │  <- 行 2
-//! │ in    ▁▂▃▅▇▆▄▂▁   1.2 MB/s   out  ▁▂▃▅▇▆▄▂▁   4.5 MB/s         │  <- 行 3
+//! │ in    ▁▂▃▅▇▆▄▂▁                                      1.2 MB/s  │  <- 行 3
+//! │ out   ▁▂▃▅▇▆▄▂▁                                      4.5 MB/s  │  <- 行 4
 //! └────────────────────────────────────────────────────────────────┘
 //! ```
 //!
@@ -35,8 +36,8 @@ use ratatui::Frame;
 
 use crate::state::{App, AppStatus};
 
-/// ヘッダの行数 (固定 3 行)。
-pub const HEADER_HEIGHT: u16 = 3;
+/// ヘッダの行数 (固定 4 行: Conn / RPS / in / out)。
+pub const HEADER_HEIGHT: u16 = 4;
 
 /// `Stale` / `Disconnected` 状態のときに、ヘッダの上に 1 行の status banner
 /// を差し込むべきかを判定する。
@@ -66,12 +67,13 @@ pub fn render_status_banner(f: &mut Frame<'_>, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(Line::from(Span::styled(label, style))), area);
 }
 
-/// `area` を 3 等分してヘッダを描画する。
+/// `area` を 4 等分してヘッダを描画する。
 ///
-/// `area.height < 3` の場合は下の行から欠ける (ratatui の `Layout` 既定挙動)。
+/// `area.height < 4` の場合は下の行から欠ける (ratatui の `Layout` 既定挙動)。
 /// `area.width` が極端に小さい場合も panic はしない (各 widget が clip)。
 pub fn render(f: &mut Frame<'_>, app: &App, area: Rect) {
     let rows = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -85,7 +87,12 @@ pub fn render(f: &mut Frame<'_>, app: &App, area: Rect) {
         render_rps_row(f, app, *r);
     }
     if let Some(r) = rows.get(2) {
-        render_bw_row(f, app, *r);
+        let data: Vec<u64> = app.history.bw_in_history().iter().copied().collect();
+        render_bw_row(f, app, *r, "in   ", &data);
+    }
+    if let Some(r) = rows.get(3) {
+        let data: Vec<u64> = app.history.bw_out_history().iter().copied().collect();
+        render_bw_row(f, app, *r, "out  ", &data);
     }
 }
 
@@ -157,33 +164,18 @@ fn render_rps_row(f: &mut Frame<'_>, app: &App, area: Rect) {
     );
 }
 
-// ---------- 行 3: BW in / out ----------
+// ---------- 行 3 / 4: BW in / out (1 行ずつ独立) ----------
 
-fn render_bw_row(f: &mut Frame<'_>, app: &App, area: Rect) {
-    let bw_in_data: Vec<u64> = app.history.bw_in_history().iter().copied().collect();
-    let bw_out_data: Vec<u64> = app.history.bw_out_history().iter().copied().collect();
-    let in_now = bw_in_data.last().copied().unwrap_or(0);
-    let out_now = bw_out_data.last().copied().unwrap_or(0);
+/// in / out それぞれを 1 行ぶん描画する。
+///
+/// 横レイアウトは RPS 行と揃え (`Length(5) + Fill(1) + Length(13)`)、ラベル列を
+/// `Conn ` / `RPS  ` と同じ 5 桁にすることで縦のラベル位置が揃う。
+fn render_bw_row(f: &mut Frame<'_>, app: &App, area: Rect, label: &'static str, data: &[u64]) {
+    let now = data.last().copied().unwrap_or(0);
 
-    // 横を半分割: in 側 / out 側
-    let [in_half, out_half] =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(area);
-
-    render_bw_half(f, app, in_half, "in  ", &bw_in_data, in_now);
-    render_bw_half(f, app, out_half, "out ", &bw_out_data, out_now);
-}
-
-fn render_bw_half(
-    f: &mut Frame<'_>,
-    app: &App,
-    area: Rect,
-    label: &'static str,
-    data: &[u64],
-    now: u64,
-) {
     let [label_area, spark_area, text_area] = Layout::horizontal([
-        Constraint::Length(4),  // "in  " or "out "
-        Constraint::Fill(1),    // sparkline
+        Constraint::Length(5),  // "in   " or "out  "
+        Constraint::Fill(1),    // sparkline (残り)
         Constraint::Length(13), // " 1234.5 MB/s"
     ])
     .areas(area);

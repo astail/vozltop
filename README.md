@@ -14,7 +14,8 @@ nginx-module-vts は nginx の vhost / upstream / cache 単位のトラフィッ
 ┌─ vozltop ──────────────────────────────────────────────────────────────────┐
 │ Conn █████░░░░░░░░░░░░░░░ 42/120   active 42  reading 3  writing 5  waiting 34 │
 │ RPS  ▁▂▃▅▇▇▆▄▂▁                                                1284/s     │
-│ in   ▁▂▃▅▇▆▄▂▁           12.4 MB/s   out ▁▂▃▅▇▆▄▂▁           84.0 MB/s    │
+│ in   ▁▂▃▅▇▆▄▂▁                                              12.4 MB/s     │
+│ out  ▁▂▃▅▇▆▄▂▁                                              84.0 MB/s     │
 ├────────────────────────────────────────────────────────────────────────────┤
 │ [Server] Upstream  Cache                                                   │
 ├────────────────────────────────────────────────────────────────────────────┤
@@ -28,7 +29,7 @@ nginx-module-vts は nginx の vhost / upstream / cache 単位のトラフィッ
 
 - 1 行目 `Conn`: nginx 接続状況。Gauge は `active / 起動以降の rolling-max` (worker_connections は VTS JSON に含まれないため auto-scale)
 - 2 行目 `RPS`: Sparkline (rolling 120 tick) + 現値
-- 3 行目 `in` / `out`: 入出力帯域の Sparkline + 現値 (左右半々)
+- 3 行目 `in` / 4 行目 `out`: 入出力帯域の Sparkline (それぞれフル幅) + 現値
 
 ## インストール
 

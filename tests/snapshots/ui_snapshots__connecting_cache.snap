@@ -4,9 +4,9 @@ expression: render_to_string(&app)
 ---
 "Conn         0/1           active 0  reading 0  writing 0  waiting 0            "
 "RPS                                                                  0/s        "
-"in                          0 B/s       out                         0 B/s       "
+"in                                                                  0 B/s       "
+"out                                                                 0 B/s       "
 "waiting for first VTS snapshot…                                                 "
-"                                                                                "
 "                                                                                "
 "                                                                                "
 "                                                                                "
