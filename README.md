@@ -109,6 +109,26 @@ vozltop https://nginx.example.com/status/format/json \
   --header 'Authorization: Bearer eyJ...'
 ```
 
+### Multi-host 監視 (issue #44)
+
+複数の nginx-vts インスタンスを同時に監視できます。URL を 2 つ以上渡すと multi-host モードで起動し、上段に Host タブバーが出ます。
+
+```bash
+vozltop http://web-prod-1/status/format/json \
+        http://web-prod-2/status/format/json \
+        http://edge-tokyo/status/format/json
+```
+
+各 host は独立した fetch task で並列に取得され、`alert_p95_ms` 等のしきい値は全 host 共通の CLI フラグから決まります。host 切替は `]` (次) / `[` (前) または Shift+L / Shift+H。
+
+config の `[hosts.*]` セクションを複数同時に使うことも可能です:
+
+```bash
+vozltop @prod @staging @edge
+```
+
+複数 alias のときは URL の置換のみ行い、`interval` / `user` 等の per-host config は適用されません (グローバル CLI 値を使用)。単一 alias のときの挙動 (config 由来のフラグ補完) は従来通りです。
+
 ### TOML 設定ファイル + alias 起動
 
 繰り返し使うホストは `~/.config/vozltop/config.toml` に登録して `vozltop @<alias>` で呼び出せます。

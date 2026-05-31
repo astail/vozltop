@@ -48,7 +48,7 @@ use vozltop::cli::Args;
 use vozltop::client::{FetchError, VtsClient};
 use vozltop::event::{map_event, AppEvent};
 use vozltop::model::VtsStatus;
-use vozltop::state::{AlertConfig, App};
+use vozltop::state::{AlertConfig, App, HostId, Workspace};
 use vozltop::terminal as term;
 use vozltop::theme::Theme;
 use vozltop::ui;
@@ -74,8 +74,24 @@ async fn run() -> Result<()> {
     // CLI / HTTP セットアップは TUI 起動前に済ませる。ここで失敗した場合は
     // raw mode に入っていないので restore 不要。
     let theme = Theme::from_args(&args);
-    let client = Arc::new(VtsClient::new(&args)?);
+    let alerts = AlertConfig::from_args(&args);
     let interval_secs = args.interval;
+
+    // issue #44: URL ごとに 1 つの VtsClient + App を作り、Workspace で束ねる。
+    // host_id は URL の host:port 部 (例: `nginx.example.com:8080`)。host のみ
+    // (port 無し) の URL は `host` だけになる。Workspace::new が重複を `(N)`
+    // サフィックスで自動回避するので、同じホストへの 2 URL も衝突しない。
+    let mut entries: Vec<(HostId, App)> = Vec::with_capacity(args.urls.len());
+    let mut clients: Vec<(HostId, Arc<VtsClient>)> = Vec::with_capacity(args.urls.len());
+    for url in args.urls.iter().cloned() {
+        let id = host_id_from_url(&url);
+        let client = Arc::new(VtsClient::new_with_url(&args, url)?);
+        let mut app = App::with_theme(theme);
+        app.alerts = alerts;
+        entries.push((id.clone(), app));
+        clients.push((id, client));
+    }
+    let mut workspace = Workspace::new(entries);
 
     // ここから先で何が起きても必ず restore を通すため、setup の各段は最小化。
     setup_terminal().wrap_err("failed to enter TUI mode")?;
@@ -85,14 +101,24 @@ async fn run() -> Result<()> {
 
     let mut terminal =
         Terminal::new(CrosstermBackend::new(io::stdout())).wrap_err("failed to init ratatui")?;
-    let mut app = App::with_theme(theme);
-    app.alerts = AlertConfig::from_args(&args);
 
-    let loop_result = event_loop(&mut terminal, &mut app, client, interval_secs).await;
+    let loop_result = event_loop(&mut terminal, &mut workspace, clients, interval_secs).await;
 
     // 正常 / 異常どちらの経路でも raw mode を抜く。restore は冪等 (idempotent)。
     term::restore();
     loop_result
+}
+
+/// URL から host id 文字列 (`host` または `host:port`) を作る。
+///
+/// `Url::host_str()` が `None` を返すケース (file:// 等) は CLI バリデーション
+/// で弾かれるはずだが、防御的に `url.as_str()` 全体を fallback として使う。
+fn host_id_from_url(url: &url::Url) -> HostId {
+    match (url.host_str(), url.port()) {
+        (Some(h), Some(p)) => format!("{h}:{p}"),
+        (Some(h), None) => h.to_string(),
+        _ => url.as_str().to_string(),
+    }
 }
 
 fn setup_terminal() -> Result<()> {
@@ -112,8 +138,8 @@ fn setup_terminal() -> Result<()> {
 /// - `EventStream` が `None` を返した (stdin EOF; 想定外だが防御的に exit)
 async fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    app: &mut App,
-    client: Arc<VtsClient>,
+    workspace: &mut Workspace,
+    clients: Vec<(HostId, Arc<VtsClient>)>,
     interval_secs: f64,
 ) -> Result<()> {
     let mut ticker = interval(Duration::from_secs_f64(interval_secs));
@@ -124,10 +150,15 @@ async fn event_loop(
     // 反復目で fetch を即発火させたいので、ticker.tick() を 1 度通しておく)。
     ticker.tick().await;
 
-    // fetch 結果は mpsc(1) で受け取る。channel cap=1 で背圧をかけ、
-    // 1 fetch ぶんしか溜めないことで RAM を抑える。
-    let (fetch_tx, mut fetch_rx) = mpsc::channel::<Result<VtsStatus, FetchError>>(1);
-    let mut in_flight: Option<JoinHandle<()>> = None;
+    // fetch 結果は mpsc で受け取る。issue #44: 各 host が並列に fetch するため、
+    // channel cap = clients.len() で「全 host が同 tick に完了しても drop しない」
+    // ことを保証する。各メッセージは (HostId, Result<VtsStatus, FetchError>) で、
+    // 受信側が active host だけでなく該当 App に正しくルーティングする。
+    let cap = clients.len().max(1);
+    let (fetch_tx, mut fetch_rx) = mpsc::channel::<(HostId, Result<VtsStatus, FetchError>)>(cap);
+    // Option<JoinHandle> は Clone を持たないので `vec![None; N]` できない。
+    // each host の単独 slot として `(0..N).map(|_| None).collect()` で初期化する。
+    let mut in_flight: Vec<Option<JoinHandle<()>>> = (0..clients.len()).map(|_| None).collect();
 
     let mut events = EventStream::new();
 
@@ -138,32 +169,40 @@ async fn event_loop(
 
     // 起動直後の 1 描画 (Connecting バナー)。
     terminal
-        .draw(|f| ui::render(f, app))
+        .draw(|f| ui::render_workspace(f, workspace))
         .wrap_err("initial draw failed")?;
 
     // 起動直後の 1 fetch も即時に走らせる (interval の 1 周目を待たない)。
-    spawn_fetch(&client, &fetch_tx, &mut in_flight);
+    // 全 host を並列に発火。
+    for (idx, (id, client)) in clients.iter().enumerate() {
+        spawn_fetch(id.clone(), client, &fetch_tx, &mut in_flight[idx]);
+    }
 
     loop {
         tokio::select! {
-            // 定期的な fetch trigger。前 fetch が未完了なら skip し、tick だけは
-            // 受け流す (= drain しないと次回 tick がブロックされる)。
+            // 定期的な fetch trigger。各 host について、前回 fetch が未完了なら
+            // その host だけ skip する (single-flight per host)。
             _ = ticker.tick() => {
-                spawn_fetch(&client, &fetch_tx, &mut in_flight);
-                // tick 自体では app 状態は変わらないが、保守的に再描画する。
+                for (idx, (id, client)) in clients.iter().enumerate() {
+                    spawn_fetch(id.clone(), client, &fetch_tx, &mut in_flight[idx]);
+                }
             }
 
-            // fetch task の完了通知。
-            Some(result) = fetch_rx.recv() => {
-                match result {
-                    Ok(status) => {
-                        app.on_fetch_ok(status);
-                        // アラート行が新たに出現したら端末ベルを 1 度鳴らす (issue #47)。
-                        if app.update_alert_active(ui::table::any_row_alerting(app)) {
-                            ring_bell();
+            // fetch task の完了通知。HostId で App を引いて反映する。
+            Some((host_id, result)) = fetch_rx.recv() => {
+                if let Some(app) = workspace.app_mut(&host_id) {
+                    match result {
+                        Ok(status) => {
+                            app.on_fetch_ok(status);
+                            // アラート行が新たに出現したら端末ベルを 1 度鳴らす (issue #47)。
+                            // multi-host でも host ごとに edge を判定する (= active か否かに
+                            // 関わらず、どの host のアラートでも 1 度ベルが鳴る)。
+                            if app.update_alert_active(ui::table::any_row_alerting(app)) {
+                                ring_bell();
+                            }
                         }
+                        Err(err) => app.on_fetch_err(&err),
                     }
-                    Err(err) => app.on_fetch_err(&err),
                 }
             }
 
@@ -174,7 +213,7 @@ async fn event_loop(
                         if let Some(app_ev) = map_event(crossterm_ev) {
                             match app_ev {
                                 AppEvent::Quit => break,
-                                AppEvent::Key(k) => handle_key(app, k),
+                                AppEvent::Key(k) => handle_key(workspace, k),
                                 AppEvent::Resize(_, _) => {
                                     // resize 自体は再描画だけで吸収する。ratatui の
                                     // `terminal.draw` が autoresize し、`TableState` が
@@ -204,22 +243,55 @@ async fn event_loop(
         }
 
         terminal
-            .draw(|f| ui::render(f, app))
+            .draw(|f| ui::render_workspace(f, workspace))
             .wrap_err("draw failed")?;
     }
 
     Ok(())
 }
 
-/// `AppEvent::Key` を `App` に反映する純関数。
+/// `AppEvent::Key` を `Workspace` (active App + host 切替) に反映する純関数。
 ///
 /// 扱うキー: F1 / `?` (help)、Enter (詳細オーバーレイを開く #32)、
 /// Esc (filter → help → detail の順で閉じる)、カーソル移動 (#28)、
 /// ソート (1-9 / F5) + フィルタ (F4 / `/` + 文字入力 / Backspace) (#31)、
-/// Tab / Shift+Tab で zone 種別タブ切替 (#104)。
+/// Tab / Shift+Tab で zone 種別タブ切替 (#104)、
+/// H / L (大文字、`[` / `]`) で host タブ切替 (#44, multi-host のみ)。
 ///
-/// テスト容易性のため `App` への &mut 操作だけを引数に取り、terminal/IO は触らない。
-fn handle_key(app: &mut App, key: KeyEvent) {
+/// テスト容易性のため Workspace への &mut 操作だけを引数に取り、terminal/IO は触らない。
+fn handle_key(ws: &mut Workspace, key: KeyEvent) {
+    // ---------- issue #44: host 切替 ----------
+    //
+    // モーダル / filter 中は他のショートカットと同じくガードする。Workspace の
+    // host が単一のときは next_host / prev_host が no-op なので、ここで safety
+    // net として host_count をチェックする必要は無いが、誤検出を防ぐため明示。
+    if ws.multi() {
+        let app = ws.active();
+        let modal = app.show_help || app.detail_zone.is_some() || app.filter_active;
+        if !modal {
+            match key.code {
+                // `]` や Shift+L (= 大文字 'L') で次の host、`[` や Shift+H で前の host。
+                // 小文字 h/l は既存の cursor 移動 (vim 風) と衝突するので使わない。
+                KeyCode::Char(']') | KeyCode::Char('L') => {
+                    ws.next_host();
+                    return;
+                }
+                KeyCode::Char('[') | KeyCode::Char('H') => {
+                    ws.prev_host();
+                    return;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    handle_app_key(ws.active_mut(), key);
+}
+
+/// `App` 単体に閉じるキー処理 (host 切替を含まない)。issue #44 以前の
+/// `handle_key` 本体。テストは既存の `handle_key` テストと共通の振る舞いを
+/// この関数で担保する。
+fn handle_app_key(app: &mut App, key: KeyEvent) {
     // フィルタ入力モード中は、ほとんどのキーを「フィルタ文字列の編集」として扱う。
     // ただし矢印キー等のカーソル移動は素通しして、絞り込みながら行を選べるように
     // する (issue #31 受け入れ条件「フィルタ中も矢印キーカーソルが効く」)。
@@ -306,13 +378,15 @@ fn handle_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// `client.fetch()` を spawn し、結果を `tx` 経由で push する task を作る。
+/// `client.fetch()` を spawn し、結果を `(host_id, result)` で `tx` に push する。
 ///
-/// **single-flight**: `in_flight` がまだ完了していなければ no-op。これにより
-/// 遅い fetch + 短い interval 設定でも task が溜まらない。
+/// **single-flight per host**: `in_flight` がまだ完了していなければ no-op。
+/// host ごとに独立して走るため、ある host の fetch が遅くても他 host の更新は
+/// 止まらない (issue #44)。
 fn spawn_fetch(
+    host_id: HostId,
     client: &Arc<VtsClient>,
-    tx: &mpsc::Sender<Result<VtsStatus, FetchError>>,
+    tx: &mpsc::Sender<(HostId, Result<VtsStatus, FetchError>)>,
     in_flight: &mut Option<JoinHandle<()>>,
 ) {
     if in_flight.as_ref().is_some_and(|h| !h.is_finished()) {
@@ -325,7 +399,7 @@ fn spawn_fetch(
     *in_flight = Some(tokio::spawn(async move {
         let result = client.fetch().await;
         // recv 側が drop 済み (= ループが exit 中) なら send は失敗する。無視。
-        let _ = tx.send(result).await;
+        let _ = tx.send((host_id, result)).await;
     }));
 }
 
@@ -414,9 +488,9 @@ mod tests {
     fn f1_toggles_help_overlay() {
         let mut app = App::new();
         assert!(!app.show_help);
-        handle_key(&mut app, press(KeyCode::F(1)));
+        handle_app_key(&mut app, press(KeyCode::F(1)));
         assert!(app.show_help, "F1 should open help");
-        handle_key(&mut app, press(KeyCode::F(1)));
+        handle_app_key(&mut app, press(KeyCode::F(1)));
         assert!(!app.show_help, "F1 again should close help");
     }
 
@@ -425,9 +499,9 @@ mod tests {
         // macOS Terminal.app が F1 を奪うため、? を letter alias として受け付ける
         // (CLAUDE.md / issue #33 受け入れ条件)。
         let mut app = App::new();
-        handle_key(&mut app, press(KeyCode::Char('?')));
+        handle_app_key(&mut app, press(KeyCode::Char('?')));
         assert!(app.show_help, "? should open help");
-        handle_key(&mut app, press(KeyCode::Char('?')));
+        handle_app_key(&mut app, press(KeyCode::Char('?')));
         assert!(!app.show_help, "? again should close help");
     }
 
@@ -435,7 +509,7 @@ mod tests {
     fn esc_closes_help_when_open() {
         let mut app = App::new();
         app.show_help = true;
-        handle_key(&mut app, press(KeyCode::Esc));
+        handle_app_key(&mut app, press(KeyCode::Esc));
         assert!(!app.show_help, "Esc should close help");
     }
 
@@ -446,16 +520,16 @@ mod tests {
         let mut app = App::new();
         app.show_help = false;
         // Esc を打っても show_help は false のまま、他フィールドにも触らない。
-        handle_key(&mut app, press(KeyCode::Esc));
+        handle_app_key(&mut app, press(KeyCode::Esc));
         assert!(!app.show_help);
     }
 
     #[test]
     fn unrelated_keys_do_not_change_help_state() {
         let mut app = App::new();
-        handle_key(&mut app, press(KeyCode::Tab));
-        handle_key(&mut app, press(KeyCode::Char('x')));
-        handle_key(&mut app, press(KeyCode::F(5)));
+        handle_app_key(&mut app, press(KeyCode::Tab));
+        handle_app_key(&mut app, press(KeyCode::Char('x')));
+        handle_app_key(&mut app, press(KeyCode::F(5)));
         assert!(!app.show_help);
     }
 
@@ -465,7 +539,7 @@ mod tests {
     fn enter_opens_detail_for_selected_zone() {
         let mut app = app_with_server_zone("alpha");
         assert!(app.detail_zone.is_none());
-        handle_key(&mut app, press(KeyCode::Enter));
+        handle_app_key(&mut app, press(KeyCode::Enter));
         assert_eq!(app.detail_zone.as_deref(), Some("alpha"));
     }
 
@@ -473,7 +547,7 @@ mod tests {
     fn enter_is_noop_without_snapshot() {
         // snapshot 未取得 (Connecting) では選択 zone が無いので Enter は no-op。
         let mut app = App::new();
-        handle_key(&mut app, press(KeyCode::Enter));
+        handle_app_key(&mut app, press(KeyCode::Enter));
         assert!(app.detail_zone.is_none());
     }
 
@@ -482,16 +556,16 @@ mod tests {
         // help モーダルが開いているときは Enter で detail を開かない。
         let mut app = app_with_server_zone("alpha");
         app.show_help = true;
-        handle_key(&mut app, press(KeyCode::Enter));
+        handle_app_key(&mut app, press(KeyCode::Enter));
         assert!(app.detail_zone.is_none());
     }
 
     #[test]
     fn esc_closes_detail_when_open() {
         let mut app = app_with_server_zone("alpha");
-        handle_key(&mut app, press(KeyCode::Enter));
+        handle_app_key(&mut app, press(KeyCode::Enter));
         assert!(app.detail_zone.is_some());
-        handle_key(&mut app, press(KeyCode::Esc));
+        handle_app_key(&mut app, press(KeyCode::Esc));
         assert!(app.detail_zone.is_none(), "Esc should close detail");
     }
 
@@ -505,7 +579,7 @@ mod tests {
     fn digit_key_sets_sort_column() {
         let mut app = App::new();
         // default は col 1 (RPS) なので別列 key 3 = 2xx% (col index 2) で選択を見る。
-        handle_key(&mut app, press_char('3'));
+        handle_app_key(&mut app, press_char('3'));
         assert_eq!(app.sort.column, 2);
         assert!(app.sort.descending);
     }
@@ -514,9 +588,9 @@ mod tests {
     fn same_digit_key_toggles_direction() {
         let mut app = App::new();
         // default (col 1) と別の列を選んでから同キー連打で toggle を見る。
-        handle_key(&mut app, press_char('3'));
+        handle_app_key(&mut app, press_char('3'));
         assert!(app.sort.descending);
-        handle_key(&mut app, press_char('3'));
+        handle_app_key(&mut app, press_char('3'));
         assert!(!app.sort.descending, "second press toggles to ascending");
     }
 
@@ -524,33 +598,33 @@ mod tests {
     fn f5_toggles_sort_direction() {
         let mut app = App::new();
         assert!(app.sort.descending);
-        handle_key(&mut app, press(KeyCode::F(5)));
+        handle_app_key(&mut app, press(KeyCode::F(5)));
         assert!(!app.sort.descending);
-        handle_key(&mut app, press(KeyCode::F(5)));
+        handle_app_key(&mut app, press(KeyCode::F(5)));
         assert!(app.sort.descending);
     }
 
     #[test]
     fn f4_enters_filter_mode() {
         let mut app = App::new();
-        handle_key(&mut app, press(KeyCode::F(4)));
+        handle_app_key(&mut app, press(KeyCode::F(4)));
         assert!(app.filter_active);
     }
 
     #[test]
     fn slash_enters_filter_mode() {
         let mut app = App::new();
-        handle_key(&mut app, press_char('/'));
+        handle_app_key(&mut app, press_char('/'));
         assert!(app.filter_active);
     }
 
     #[test]
     fn typing_in_filter_mode_appends_chars() {
         let mut app = App::new();
-        handle_key(&mut app, press(KeyCode::F(4)));
-        handle_key(&mut app, press_char('a'));
-        handle_key(&mut app, press_char('p'));
-        handle_key(&mut app, press_char('i'));
+        handle_app_key(&mut app, press(KeyCode::F(4)));
+        handle_app_key(&mut app, press_char('a'));
+        handle_app_key(&mut app, press_char('p'));
+        handle_app_key(&mut app, press_char('i'));
         assert_eq!(app.filter, "api");
     }
 
@@ -559,9 +633,9 @@ mod tests {
         let mut app = App::new();
         app.enter_filter();
         for c in ['a', 'b', 'c'] {
-            handle_key(&mut app, press_char(c));
+            handle_app_key(&mut app, press_char(c));
         }
-        handle_key(&mut app, press(KeyCode::Backspace));
+        handle_app_key(&mut app, press(KeyCode::Backspace));
         assert_eq!(app.filter, "ab");
     }
 
@@ -569,8 +643,8 @@ mod tests {
     fn esc_in_filter_mode_clears_filter() {
         let mut app = App::new();
         app.enter_filter();
-        handle_key(&mut app, press_char('x'));
-        handle_key(&mut app, press(KeyCode::Esc));
+        handle_app_key(&mut app, press_char('x'));
+        handle_app_key(&mut app, press(KeyCode::Esc));
         assert!(!app.filter_active);
         assert!(app.filter.is_empty());
     }
@@ -579,8 +653,8 @@ mod tests {
     fn enter_in_filter_mode_confirms_keeps_filter() {
         let mut app = App::new();
         app.enter_filter();
-        handle_key(&mut app, press_char('a'));
-        handle_key(&mut app, press(KeyCode::Enter));
+        handle_app_key(&mut app, press_char('a'));
+        handle_app_key(&mut app, press(KeyCode::Enter));
         assert!(!app.filter_active, "Enter exits input mode");
         assert_eq!(app.filter, "a", "Enter keeps the filter applied");
     }
@@ -591,9 +665,9 @@ mod tests {
         let mut app = app_with_server_zone("alpha");
         app.visible_rows.set(5);
         app.enter_filter();
-        handle_key(&mut app, press(KeyCode::Down));
+        handle_app_key(&mut app, press(KeyCode::Down));
         assert_eq!(app.cursor, 1, "Down moves cursor while filtering");
-        handle_key(&mut app, press(KeyCode::Up));
+        handle_app_key(&mut app, press(KeyCode::Up));
         assert_eq!(app.cursor, 0, "Up moves cursor while filtering");
     }
 
@@ -602,10 +676,10 @@ mod tests {
         // 入力モードを Enter で抜けたあと、Esc で残った filter を解除できる。
         let mut app = App::new();
         app.enter_filter();
-        handle_key(&mut app, press_char('a'));
-        handle_key(&mut app, press(KeyCode::Enter));
+        handle_app_key(&mut app, press_char('a'));
+        handle_app_key(&mut app, press(KeyCode::Enter));
         assert_eq!(app.filter, "a");
-        handle_key(&mut app, press(KeyCode::Esc));
+        handle_app_key(&mut app, press(KeyCode::Esc));
         assert!(app.filter.is_empty(), "Esc clears the leftover filter");
     }
 
@@ -613,7 +687,7 @@ mod tests {
     fn digit_keys_ignored_while_help_open() {
         let mut app = App::new();
         app.show_help = true;
-        handle_key(&mut app, press_char('3'));
+        handle_app_key(&mut app, press_char('3'));
         assert_eq!(
             app.sort.column, 1,
             "sort unchanged (default RPS) while help open"
@@ -624,7 +698,7 @@ mod tests {
     fn f4_ignored_while_help_open() {
         let mut app = App::new();
         app.show_help = true;
-        handle_key(&mut app, press(KeyCode::F(4)));
+        handle_app_key(&mut app, press(KeyCode::F(4)));
         assert!(!app.filter_active, "filter not entered while help open");
     }
 
@@ -633,7 +707,7 @@ mod tests {
         // detail オーバーレイ表示中は裏のテーブルを並び替えない (filter と同じガード)。
         let mut app = App::new();
         app.detail_zone = Some("alpha".to_string());
-        handle_key(&mut app, press_char('3'));
+        handle_app_key(&mut app, press_char('3'));
         assert_eq!(
             app.sort.column, 1,
             "sort unchanged (default RPS) while detail open"
@@ -645,7 +719,7 @@ mod tests {
         let mut app = App::new();
         app.detail_zone = Some("alpha".to_string());
         assert!(app.sort.descending);
-        handle_key(&mut app, press(KeyCode::F(5)));
+        handle_app_key(&mut app, press(KeyCode::F(5)));
         assert!(
             app.sort.descending,
             "sort direction unchanged while detail open"
@@ -656,15 +730,15 @@ mod tests {
     fn esc_closes_help_before_detail() {
         // help と detail が両方開いているとき、Esc はまず help を閉じる。
         let mut app = app_with_server_zone("alpha");
-        handle_key(&mut app, press(KeyCode::Enter));
+        handle_app_key(&mut app, press(KeyCode::Enter));
         app.show_help = true;
-        handle_key(&mut app, press(KeyCode::Esc));
+        handle_app_key(&mut app, press(KeyCode::Esc));
         assert!(!app.show_help, "first Esc closes help");
         assert!(
             app.detail_zone.is_some(),
             "detail stays open after first Esc"
         );
-        handle_key(&mut app, press(KeyCode::Esc));
+        handle_app_key(&mut app, press(KeyCode::Esc));
         assert!(app.detail_zone.is_none(), "second Esc closes detail");
     }
 
@@ -676,13 +750,13 @@ mod tests {
     fn tab_key_cycles_through_zone_tabs() {
         let mut app = App::new();
         assert_eq!(app.active_tab, Tab::Server);
-        handle_key(&mut app, press(KeyCode::Tab));
+        handle_app_key(&mut app, press(KeyCode::Tab));
         assert_eq!(app.active_tab, Tab::Upstream);
-        handle_key(&mut app, press(KeyCode::Tab));
+        handle_app_key(&mut app, press(KeyCode::Tab));
         assert_eq!(app.active_tab, Tab::Cache);
-        handle_key(&mut app, press(KeyCode::Tab));
+        handle_app_key(&mut app, press(KeyCode::Tab));
         assert_eq!(app.active_tab, Tab::Filter);
-        handle_key(&mut app, press(KeyCode::Tab));
+        handle_app_key(&mut app, press(KeyCode::Tab));
         assert_eq!(app.active_tab, Tab::Server, "Filter の次は Server");
     }
 
@@ -690,9 +764,9 @@ mod tests {
     fn shift_tab_cycles_backwards() {
         // crossterm は Shift+Tab を `KeyCode::BackTab` として配信する。
         let mut app = App::new();
-        handle_key(&mut app, press(KeyCode::BackTab));
+        handle_app_key(&mut app, press(KeyCode::BackTab));
         assert_eq!(app.active_tab, Tab::Filter, "Server の前は Filter");
-        handle_key(&mut app, press(KeyCode::BackTab));
+        handle_app_key(&mut app, press(KeyCode::BackTab));
         assert_eq!(app.active_tab, Tab::Cache);
     }
 
@@ -700,7 +774,7 @@ mod tests {
     fn tab_ignored_while_help_open() {
         let mut app = App::new();
         app.show_help = true;
-        handle_key(&mut app, press(KeyCode::Tab));
+        handle_app_key(&mut app, press(KeyCode::Tab));
         assert_eq!(
             app.active_tab,
             Tab::Server,
@@ -712,7 +786,7 @@ mod tests {
     fn tab_ignored_while_detail_open() {
         let mut app = App::new();
         app.detail_zone = Some("alpha".to_string());
-        handle_key(&mut app, press(KeyCode::Tab));
+        handle_app_key(&mut app, press(KeyCode::Tab));
         assert_eq!(
             app.active_tab,
             Tab::Server,
@@ -728,11 +802,97 @@ mod tests {
         let mut app = App::new();
         app.enter_filter();
         let before_filter = app.filter.clone();
-        handle_key(&mut app, press(KeyCode::Tab));
+        handle_app_key(&mut app, press(KeyCode::Tab));
         assert_eq!(app.active_tab, Tab::Server);
         assert_eq!(
             app.filter, before_filter,
             "filter 入力モード中 Tab は no-op"
+        );
+    }
+
+    // ---------- host 切替 (issue #44) ----------
+
+    fn multi_workspace() -> Workspace {
+        Workspace::new(vec![
+            ("h1".to_string(), App::new()),
+            ("h2".to_string(), App::new()),
+            ("h3".to_string(), App::new()),
+        ])
+    }
+
+    #[test]
+    fn bracket_keys_cycle_hosts_forward_and_back() {
+        let mut ws = multi_workspace();
+        assert_eq!(ws.active_id(), "h1");
+        handle_key(&mut ws, press(KeyCode::Char(']')));
+        assert_eq!(ws.active_id(), "h2");
+        handle_key(&mut ws, press(KeyCode::Char(']')));
+        assert_eq!(ws.active_id(), "h3");
+        handle_key(&mut ws, press(KeyCode::Char(']')));
+        assert_eq!(ws.active_id(), "h1", "末尾の次は先頭");
+        handle_key(&mut ws, press(KeyCode::Char('[')));
+        assert_eq!(ws.active_id(), "h3", "先頭の前は末尾");
+    }
+
+    #[test]
+    fn shift_letter_keys_cycle_hosts() {
+        // 大文字 L = next、大文字 H = prev (vim 風の小文字 h/l は cursor に予約)。
+        let mut ws = multi_workspace();
+        handle_key(&mut ws, press(KeyCode::Char('L')));
+        assert_eq!(ws.active_id(), "h2");
+        handle_key(&mut ws, press(KeyCode::Char('H')));
+        assert_eq!(ws.active_id(), "h1");
+    }
+
+    #[test]
+    fn lowercase_h_and_l_still_move_cursor_not_host() {
+        // 小文字 h/l は host 切替に使わない。`KeyCode::Char('h')` は handle_key
+        // の単一 App ルートには分岐が無いので no-op。'l' も同様。
+        // ここでは active_id が変わらないことだけを担保する。
+        let mut ws = multi_workspace();
+        handle_key(&mut ws, press(KeyCode::Char('l')));
+        assert_eq!(ws.active_id(), "h1");
+        handle_key(&mut ws, press(KeyCode::Char('h')));
+        assert_eq!(ws.active_id(), "h1");
+    }
+
+    #[test]
+    fn host_switch_is_noop_in_single_host_workspace() {
+        let mut ws = Workspace::single_host(App::new());
+        handle_key(&mut ws, press(KeyCode::Char(']')));
+        handle_key(&mut ws, press(KeyCode::Char('[')));
+        // single-host では既に index は 0 で動かない。
+        assert_eq!(ws.active_index(), 0);
+    }
+
+    #[test]
+    fn host_switch_is_blocked_while_help_open() {
+        let mut ws = multi_workspace();
+        ws.active_mut().show_help = true;
+        handle_key(&mut ws, press(KeyCode::Char(']')));
+        assert_eq!(ws.active_id(), "h1", "help 中は host 切替を抑制");
+    }
+
+    #[test]
+    fn host_switch_is_blocked_while_detail_open() {
+        let mut ws = multi_workspace();
+        ws.active_mut().detail_zone = Some("z".to_string());
+        handle_key(&mut ws, press(KeyCode::Char(']')));
+        assert_eq!(ws.active_id(), "h1", "detail 中は host 切替を抑制");
+    }
+
+    #[test]
+    fn host_switch_is_blocked_while_filter_active() {
+        // filter 入力モード中の `]` は filter への文字入力として扱われる
+        // (handle_app_key の filter_active 早期 return 内で push_filter_char される)。
+        let mut ws = multi_workspace();
+        ws.active_mut().enter_filter();
+        handle_key(&mut ws, press(KeyCode::Char(']')));
+        assert_eq!(ws.active_id(), "h1", "filter 入力中は host 切替を抑制");
+        assert_eq!(
+            ws.active().filter,
+            "]",
+            "filter 入力モード中の `]` は filter に追加される"
         );
     }
 }

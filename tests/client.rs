@@ -66,7 +66,7 @@ async fn spawn_oneshot_capturing(response: Vec<u8>) -> (Url, oneshot::Receiver<S
 
 fn args_for(url: Url) -> Args {
     Args {
-        url,
+        urls: vec![url],
         interval: 1.0,
         user: None,
         headers: Vec::new(),
@@ -228,7 +228,7 @@ async fn fetch_returns_err_on_connection_refused() {
 async fn fetch_sends_basic_auth_when_user_set() {
     let (url, rx) = spawn_oneshot_capturing(ok_vts_response()).await;
     let args = Args {
-        url,
+        urls: vec![url],
         interval: 1.0,
         user: Some(("alice".into(), "s3cret".into())),
         headers: Vec::new(),
@@ -253,7 +253,7 @@ async fn fetch_sends_basic_auth_when_user_set() {
 async fn fetch_sends_custom_headers() {
     let (url, rx) = spawn_oneshot_capturing(ok_vts_response()).await;
     let args = Args {
-        url,
+        urls: vec![url],
         interval: 1.0,
         user: None,
         headers: vec![
@@ -288,7 +288,7 @@ async fn fetch_user_takes_precedence_over_authorization_header() {
     // 上書きするので、最終的に送られるのは Basic ... になる。
     let (url, rx) = spawn_oneshot_capturing(ok_vts_response()).await;
     let args = Args {
-        url,
+        urls: vec![url],
         interval: 1.0,
         user: Some(("alice".into(), "s3cret".into())),
         headers: vec![header("authorization", "Bearer should-be-overridden")],
@@ -320,7 +320,7 @@ async fn client_builds_with_insecure_flag() {
     // 確認するに留める。
     let (url, _rx) = spawn_oneshot_capturing(ok_vts_response()).await;
     let args = Args {
-        url,
+        urls: vec![url],
         interval: 1.0,
         user: None,
         headers: Vec::new(),

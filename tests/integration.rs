@@ -41,7 +41,7 @@ const FIXTURE_BODY: &str = include_str!("fixtures/initial.json");
 /// `pub` で公開されている前提で直接構築する。
 fn args_for(url: Url) -> Args {
     Args {
-        url,
+        urls: vec![url],
         interval: 1.0,
         user: None,
         headers: Vec::new(),

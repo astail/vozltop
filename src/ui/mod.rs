@@ -43,21 +43,50 @@ pub mod detail;
 pub mod footer;
 pub mod header;
 pub mod help;
+pub mod host_tab;
 pub mod table;
 
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::state::App;
+use crate::state::{App, Workspace};
+
+/// `Workspace` ルートから画面全体を描画する (issue #44)。
+///
+/// multi-host のときは画面最上段に 1 行の Host タブバーを差し込み、その下に
+/// active host の `App` を従来の [`render`] と同じレイアウトで描画する。
+/// 単一 host のときは Host タブバーを描画せず、[`render`] と完全に同じ
+/// 出力になる (= snapshot / 既存 UI テストが不変)。
+pub fn render_workspace(f: &mut Frame<'_>, ws: &Workspace) {
+    if !ws.multi() {
+        render(f, ws.active());
+        return;
+    }
+    let area = f.area();
+    let [host_bar, body] = Layout::vertical([
+        Constraint::Length(host_tab::HOST_TAB_HEIGHT),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    host_tab::render(f, ws, host_bar);
+    render_in(f, ws.active(), body);
+}
 
 /// app の状態に応じて画面全体を再描画する。
 ///
 /// 副作用は `f` への widget render 呼び出しのみ。I/O を伴わないので
 /// `TestBackend` ベースの単体テストで挙動を固定できる。
 pub fn render(f: &mut Frame<'_>, app: &App) {
+    render_in(f, app, f.area());
+}
+
+/// [`render`] の実装本体。area を引数で受けるため、host タブバーぶんの行を
+/// 削った領域に描画したい multi-host 経路 ([`render_workspace`]) からも
+/// 再利用できる。
+pub(crate) fn render_in(f: &mut Frame<'_>, app: &App, area: Rect) {
     let banner_msg = app.error_banner_display();
     let show_status_banner = header::show_status_banner(app);
 
@@ -73,7 +102,6 @@ pub fn render(f: &mut Frame<'_>, app: &App) {
     }
     constraints.push(Constraint::Length(1)); // footer
 
-    let area = f.area();
     let rows = Layout::vertical(constraints).split(area);
 
     let mut idx = 0usize;

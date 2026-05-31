@@ -179,7 +179,7 @@ mod tests {
 
     fn args_with(no_color: bool) -> Args {
         Args {
-            url: url::Url::parse("http://x/s").unwrap(),
+            urls: vec![url::Url::parse("http://x/s").unwrap()],
             interval: 1.0,
             user: None,
             headers: Vec::new(),

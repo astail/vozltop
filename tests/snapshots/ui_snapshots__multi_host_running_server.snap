@@ -1,0 +1,29 @@
+---
+source: tests/ui_snapshots.rs
+assertion_line: 151
+expression: render_workspace_to_string(&ws)
+---
+"HOST  [web-prod-1]  web-prod-2  edge-tokyo                                      "
+"Conn ████████1/1 ████████  active 1  reading 0  writing 1  waiting 0            "
+"RPS  █                                                               510/s      "
+"in   █                                                              44.5 KB/s   "
+"out  █                                                              84.0 KB/s   "
+"ZONE             RPS      2xx%    4xx%    5xx%    p95      IN/s       OUT/s     "
+"*                510      100.0%  0.0%    0.0%    ~0ms     44.5 KB/s  84.0 KB/s "
+"_                180      100.0%  0.0%    0.0%    ~0ms     17.2 KB/s  29.7 KB/s "
+"api.example.test 180      100.0%  0.0%    0.0%    ~0ms     14.8 KB/s  29.7 KB/s "
+"web.example.test 150      100.0%  0.0%    0.0%    ~0ms     12.5 KB/s  24.6 KB/s "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"F1Help F4Filter F5Sort F10Quit  Tab:Zone Enter    Sort: RPS ↓                   "
