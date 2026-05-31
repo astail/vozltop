@@ -170,13 +170,7 @@ fn render_rps_row(f: &mut Frame<'_>, app: &App, area: Rect) {
 ///
 /// 横レイアウトは RPS 行と揃え (`Length(5) + Fill(1) + Length(13)`)、ラベル列を
 /// `Conn ` / `RPS  ` と同じ 5 桁にすることで縦のラベル位置が揃う。
-fn render_bw_row(
-    f: &mut Frame<'_>,
-    app: &App,
-    area: Rect,
-    label: &'static str,
-    data: &[u64],
-) {
+fn render_bw_row(f: &mut Frame<'_>, app: &App, area: Rect, label: &'static str, data: &[u64]) {
     let now = data.last().copied().unwrap_or(0);
 
     let [label_area, spark_area, text_area] = Layout::horizontal([
