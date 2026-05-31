@@ -185,7 +185,6 @@ mod tests {
             headers: Vec::new(),
             insecure: false,
             no_color,
-            alert_5xx_pct: None,
             alert_p95_ms: None,
             config: None,
         }

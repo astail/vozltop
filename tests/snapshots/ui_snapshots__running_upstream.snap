@@ -3,7 +3,7 @@ source: tests/ui_snapshots.rs
 expression: render_to_string(&app)
 ---
 "Conn ████████1/1 ████████  active 1  reading 0  writing 1  waiting 0            "
-"RPS  █                                                 1020/s       5xx 0.00%   "
+"RPS  █                                                               1020/s     "
 "in  █                       89.0 KB/s   out █                       168.0 KB/s  "
 "ZONE       RPS      2xx%    4xx%    5xx%    p95      IN/s      OUT/s     STATE  "
 "backend_ap 90.1     100.0%  0.0%    0.0%    ~0ms     7.4 KB/s  14.9 KB/s up     "

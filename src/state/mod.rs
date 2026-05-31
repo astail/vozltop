@@ -95,15 +95,13 @@ impl Default for SortState {
     }
 }
 
-/// アラート閾値 (issue #47)。`--alert-5xx-pct` / `--alert-p95-ms` から確定する。
+/// アラート閾値 (issue #47)。`--alert-p95-ms` から確定する。
 ///
-/// いずれかの閾値以上の指標を持つ行を `ui::table` がハイライトし、新たにアラート
-/// 行が出現した瞬間に `main.rs` が端末ベルを 1 度鳴らす。閾値未設定 (`None`) の
-/// 指標は判定に寄与しない。TOML 設定との統合は issue #46 に委ねる。
+/// 閾値以上の p95 レイテンシを持つ行を `ui::table` がハイライトし、新たにアラート
+/// 行が出現した瞬間に `main.rs` が端末ベルを 1 度鳴らす。閾値未設定 (`None`) なら
+/// アラート判定は行わない。
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct AlertConfig {
-    /// 5xx 率 (%) の上限。これ以上でアラート。
-    pub max_5xx_pct: Option<f64>,
     /// p95 レイテンシ (ms) の上限。これ以上でアラート。
     pub max_p95_ms: Option<u64>,
 }
@@ -112,14 +110,13 @@ impl AlertConfig {
     /// `Args` から確定する (theme と同じ `from_args` 規約)。
     pub fn from_args(args: &Args) -> Self {
         Self {
-            max_5xx_pct: args.alert_5xx_pct,
             max_p95_ms: args.alert_p95_ms,
         }
     }
 
-    /// いずれかの閾値が設定されていれば `true` (= アラート判定を行う)。
+    /// 閾値が設定されていれば `true` (= アラート判定を行う)。
     pub fn is_enabled(&self) -> bool {
-        self.max_5xx_pct.is_some() || self.max_p95_ms.is_some()
+        self.max_p95_ms.is_some()
     }
 }
 
@@ -746,12 +743,6 @@ mod tests {
     fn alert_config_is_enabled_only_when_a_threshold_is_set() {
         assert!(!AlertConfig::default().is_enabled());
         assert!(AlertConfig {
-            max_5xx_pct: Some(1.0),
-            max_p95_ms: None,
-        }
-        .is_enabled());
-        assert!(AlertConfig {
-            max_5xx_pct: None,
             max_p95_ms: Some(500),
         }
         .is_enabled());

@@ -11,6 +11,14 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 
 ## [Unreleased]
 
+### Changed
+
+- README のヘッダ図と説明を実装に合わせて更新 (`Conn` 行の Gauge、`RPS` 行の Sparkline、`BW` 行の `in`/`out` 左右半々分割)
+
+### Removed
+
+- `--alert-5xx-pct` CLI フラグと、それに紐づく 5xx 行ハイライト / ベル機能を削除。ヘッダ 2 行目の `5xx N.NN%` 表示も削除。理由: 5xx は production の異常検知で重要だが、ヘッダ右への常時併記はノイズが多く、行レベルで個別に確認した方が情報の precision が高い。`--alert-p95-ms` (p95 レイテンシ閾値) と SLO 監視の経路は維持する。TOML config の `alert_5xx_pct` フィールドも削除 (`alert_p95_ms` は維持)
+
 ## [0.1.0] - 2026-05-31
 
 初回リリース。`htop` ライクな TUI で nginx-module-vts JSON をリアルタイム可視化する CLI。
