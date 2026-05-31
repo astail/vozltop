@@ -153,6 +153,7 @@ vozltop/
 | F4 / `/` | フィルタ（zone 名 substring） |
 | F5 | ソート方向反転 |
 | 1-9 | ソート列指定（タブごとに列構成が異なる。詳細は `docs/DESIGN.md` 参照） |
+| `[` / `]` (or Shift+H / Shift+L) | host 切替 (multi-host のみ、issue #44) |
 | F10 / q / Ctrl-C | 終了 |
 
 F-key を奪うターミナル（macOS Terminal.app 等）向けの letter エイリアス: `?` = F1, `q` = F10。
@@ -160,7 +161,7 @@ F-key を奪うターミナル（macOS Terminal.app 等）向けの letter エ�
 ## CLI
 
 ```
-vozltop <URL> [OPTIONS]
+vozltop <URL>... [OPTIONS]
 
 OPTIONS:
   -i, --interval <SECONDS>  リフレッシュ間隔 [default: 1.0]

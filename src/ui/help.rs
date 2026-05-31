@@ -14,6 +14,7 @@
 //! - F4 / `/`: フィルタ
 //! - F5: ソート方向反転
 //! - 1-9: ソート列指定
+//! - `[` / `]` (Shift+H / Shift+L): host 切替 (multi-host のみ, issue #44)
 //! - F10 / q / Ctrl-C: 終了
 //!
 //! macOS Terminal.app は F1-F4 を OS 側で奪うため、letter alias
@@ -42,6 +43,7 @@ const HELP_ROWS: &[(&str, &str)] = &[
     ("F4 / /", "filter zones by substring"),
     ("F5", "reverse sort direction"),
     ("1 – 9", "choose sort column (tab-specific)"),
+    ("[ / ]", "switch host (multi-host; also Shift+H / Shift+L)"),
     ("F10 / q / Ctrl-C", "quit"),
 ];
 
@@ -150,10 +152,10 @@ mod tests {
     #[test]
     fn help_contains_all_documented_keys() {
         let out = draw_help_to_string(80, 24);
-        // 表の主要キーが描画されていること。
+        // 表の主要キーが描画されていること。issue #44 で `[` / `]` の host 切替を追加。
         for token in [
             "F1", "?", "Tab", "Up", "Down", "PgUp", "PgDn", "Enter", "Esc", "F4", "/", "F5", "F10",
-            "q", "Ctrl-C",
+            "q", "Ctrl-C", "[", "]", "host",
         ] {
             assert!(
                 out.contains(token),

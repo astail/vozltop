@@ -26,6 +26,7 @@ pub mod derived;
 pub mod history;
 pub mod percentile;
 pub mod sort;
+pub mod workspace;
 
 pub use derived::{
     compute, CacheDerived, DerivedSnapshot, ServerDerived, StatusRatios, UpstreamDerived, ZoneRates,
@@ -33,6 +34,7 @@ pub use derived::{
 pub use history::{History, Snapshot, HISTORY_CAPACITY};
 pub use percentile::{average_fallback, compare_for_sort, percentile, PercentileResult};
 pub use sort::{column_at, column_label, SortColumn};
+pub use workspace::{HostId, Workspace};
 
 /// `Stale` → `Disconnected` に escalate する連続失敗回数の閾値。
 ///

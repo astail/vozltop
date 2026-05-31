@@ -60,8 +60,14 @@ pub const MAX_INTERVAL_SECS: f64 = 60.0;
 )]
 pub struct Args {
     /// nginx-vts の `/status/format/json` などを指す絶対 URL。
-    #[arg(value_name = "URL")]
-    pub url: Url,
+    ///
+    /// issue #44: 1 つ以上の URL を受け取る。複数指定すると multi-host モードで
+    /// 起動し、UI 上段に Host タブバーが出る。1 つだけのときは単一 host (= 従来通り)。
+    /// `@alias` 引数 (config 経由) も同じ positional に書ける。`@alias` 単独のときは
+    /// host config の各種フラグも引き継ぐ。複数 `@alias` のときはフラグ継承は行わず
+    /// URL の置換のみ行う (per-host CLI フラグは v1 範囲外、issue #44 escalation #4 参照)。
+    #[arg(value_name = "URL", num_args = 1.., required = true)]
+    pub urls: Vec<Url>,
 
     /// リフレッシュ間隔 (秒)。
     #[arg(
@@ -172,13 +178,25 @@ impl Args {
         let mut argv: Vec<OsString> = argv.into_iter().map(Into::into).collect();
         // Pass 1: --config フラグを peek (clap parse 前に config path を確定する)。
         let explicit_path = find_config_flag_value(&argv);
-        // Pass 2: positional の @alias を探す
-        let alias_position = find_positional_alias_index(&argv);
-        if let Some((idx, alias)) = alias_position {
+        // Pass 2: positional の @alias を探す (issue #44: 複数 alias 対応)。
+        let alias_positions = find_positional_alias_indices(&argv);
+        if !alias_positions.is_empty() {
             // alias が見つかったときだけ config を読む。alias 無しなら従来動作。
             let config = Config::load(explicit_path.as_deref())?;
-            let host = config.resolve_alias(&alias)?;
-            apply_host_to_argv(&mut argv, idx, host);
+            // URL の置換は全 alias に対して行う。host config 由来のフラグ継承は
+            // alias が 1 つだけのときのみ適用 (multi-alias で互いに矛盾する
+            // フラグを注入できないため。詳細は urls の docstring 参照)。
+            let single_alias = alias_positions.len() == 1;
+            // 後ろから処理することで、フラグ append による index ずれを避けつつ
+            // 「最後の URL 置換」が argv に与える影響を限定できる。
+            for (idx, alias) in alias_positions.into_iter().rev() {
+                let host = config.resolve_alias(&alias)?;
+                if single_alias {
+                    apply_host_to_argv(&mut argv, idx, host);
+                } else {
+                    argv[idx] = OsString::from(&host.url);
+                }
+            }
         }
         Ok(Self::try_parse_from(argv)?)
     }
@@ -377,14 +395,17 @@ fn find_config_flag_value(argv: &[OsString]) -> Option<PathBuf> {
     last
 }
 
-/// argv の positional 引数を 1 つだけ探し、`@alias` 形式なら `(index, alias)` を返す。
+/// argv の全 positional 引数を走査し、`@alias` 形式のものを `(index, alias)` の
+/// Vec で返す (issue #44: 複数 alias 対応)。
 ///
 /// 値を取るフラグ (`--user`, `-u`, `--header`, `-H`, `--interval`, `-i`,
 /// `--alert-p95-ms`, `--config`) の直後の引数は positional ではなく
 /// 値とみなす。`detect_argv_secret_in` と同じスキップ規則。
 ///
-/// program name (`argv[0]`) もスキップ。
-fn find_positional_alias_index(argv: &[OsString]) -> Option<(usize, String)> {
+/// program name (`argv[0]`) もスキップ。通常の URL positional は結果に含めない
+/// (alias のみ収集する)。
+fn find_positional_alias_indices(argv: &[OsString]) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
     let mut prev_takes_value = false;
     for (idx, arg) in argv.iter().enumerate() {
         let s = arg.to_string_lossy();
@@ -406,12 +427,12 @@ fn find_positional_alias_index(argv: &[OsString]) -> Option<(usize, String)> {
             continue;
         }
         if let Some(alias) = Config::parse_alias_arg(&s) {
-            return Some((idx, alias.to_string()));
+            out.push((idx, alias.to_string()));
         }
-        // 通常 URL positional は対象外。alias を見つけずに positional を 1 つ確定したら抜ける。
-        return None;
+        // 通常 URL positional は alias でないので結果に入れないが、
+        // 走査は止めずに残りも続ける (issue #44: 複数 positional 対応)。
     }
-    None
+    out
 }
 
 /// host config の値を argv に注入する。CLI で明示済みのフラグは上書きしない。
@@ -837,7 +858,7 @@ mod tests {
 
     fn args_with_no_color(flag: bool) -> Args {
         Args {
-            url: Url::parse("http://x/s").unwrap(),
+            urls: vec![Url::parse("http://x/s").unwrap()],
             interval: 1.0,
             user: None,
             headers: Vec::new(),
@@ -1264,7 +1285,7 @@ mod tests {
         // alias を使わない場合は config を読まずに従来動作 (URL 直指定が通る)。
         let argv = ["vozltop", "https://example.com/status"];
         let args = Args::parse_with_config_from(argv).unwrap();
-        assert_eq!(args.url.as_str(), "https://example.com/status");
+        assert_eq!(args.urls[0].as_str(), "https://example.com/status");
         assert_eq!(args.interval, 1.0); // 組み込みデフォルト
     }
 
@@ -1277,7 +1298,7 @@ mod tests {
         let argv = ["vozltop", "@prod", "--config", cfg.to_str().unwrap()];
         let args = Args::parse_with_config_from(argv).unwrap();
         assert_eq!(
-            args.url.as_str(),
+            args.urls[0].as_str(),
             "https://nginx.example.com/status/format/json"
         );
     }
@@ -1374,15 +1395,98 @@ mod tests {
     }
 
     #[test]
-    fn find_positional_alias_index_skips_flag_values() {
+    fn find_positional_alias_indices_skips_flag_values() {
         // `--user alice:pw` の値 `alice:pw` を positional として誤検出しないこと。
         let argv: Vec<OsString> = ["vozltop", "--user", "alice:pw", "@prod"]
             .iter()
             .map(|s| OsString::from(*s))
             .collect();
         assert_eq!(
-            find_positional_alias_index(&argv),
-            Some((3, "prod".to_string()))
+            find_positional_alias_indices(&argv),
+            vec![(3, "prod".to_string())]
         );
+    }
+
+    // ---------- issue #44: 複数 URL / 複数 alias ----------
+
+    #[test]
+    fn args_parses_multiple_urls() {
+        let a = try_parse(&[
+            "vozltop",
+            "http://host1/status",
+            "http://host2/status",
+            "http://host3/status",
+        ])
+        .unwrap();
+        assert_eq!(a.urls.len(), 3);
+        assert_eq!(a.urls[0].as_str(), "http://host1/status");
+        assert_eq!(a.urls[2].as_str(), "http://host3/status");
+    }
+
+    #[test]
+    fn args_single_url_is_a_one_element_vec() {
+        // 単一 host の backward 互換性: urls の長さは 1。
+        let a = try_parse(&["vozltop", "http://host/status"]).unwrap();
+        assert_eq!(a.urls.len(), 1);
+    }
+
+    #[test]
+    fn find_positional_alias_indices_collects_all_aliases() {
+        let argv: Vec<OsString> = ["vozltop", "@prod", "@staging", "@edge"]
+            .iter()
+            .map(|s| OsString::from(*s))
+            .collect();
+        let got = find_positional_alias_indices(&argv);
+        assert_eq!(got.len(), 3);
+        assert_eq!(got[0], (1, "prod".to_string()));
+        assert_eq!(got[1], (2, "staging".to_string()));
+        assert_eq!(got[2], (3, "edge".to_string()));
+    }
+
+    #[test]
+    fn find_positional_alias_indices_mixes_urls_and_aliases() {
+        let argv: Vec<OsString> = ["vozltop", "http://x/s", "@staging"]
+            .iter()
+            .map(|s| OsString::from(*s))
+            .collect();
+        let got = find_positional_alias_indices(&argv);
+        assert_eq!(got, vec![(2, "staging".to_string())]);
+    }
+
+    #[test]
+    fn parse_with_config_resolves_multiple_aliases() {
+        let cfg = write_tmp_config(
+            "[hosts.prod]\nurl = \"https://prod/s\"\n\n[hosts.stg]\nurl = \"https://stg/s\"\n",
+        );
+        let argv = [
+            "vozltop",
+            "@prod",
+            "@stg",
+            "--config",
+            cfg.to_str().unwrap(),
+        ];
+        let args = Args::parse_with_config_from(argv).unwrap();
+        assert_eq!(args.urls.len(), 2);
+        assert_eq!(args.urls[0].as_str(), "https://prod/s");
+        assert_eq!(args.urls[1].as_str(), "https://stg/s");
+    }
+
+    #[test]
+    fn parse_with_config_multi_alias_does_not_inject_per_host_interval() {
+        // 複数 alias のとき、host config の interval は適用しない (グローバルな
+        // CLI フラグは単一値しか持てないため。詳細は urls の docstring 参照)。
+        let cfg = write_tmp_config(
+            "[hosts.prod]\nurl = \"https://prod/s\"\ninterval = 0.5\n\n[hosts.stg]\nurl = \"https://stg/s\"\ninterval = 2.0\n",
+        );
+        let argv = [
+            "vozltop",
+            "@prod",
+            "@stg",
+            "--config",
+            cfg.to_str().unwrap(),
+        ];
+        let args = Args::parse_with_config_from(argv).unwrap();
+        // 組み込みデフォルト (1.0) のまま (どちらの alias の interval も適用されない)
+        assert_eq!(args.interval, 1.0);
     }
 }

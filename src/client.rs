@@ -71,11 +71,27 @@ pub struct VtsClient {
 }
 
 impl VtsClient {
-    /// `Args` から HTTP クライアントを組み立てる。
+    /// `Args` から HTTP クライアントを組み立てる (単一 host 互換 API)。
+    ///
+    /// `args.urls[0]` を対象 URL として使う。multi-host のときは
+    /// [`Self::new_with_url`] で host ごとに個別の URL を渡す。
     ///
     /// reqwest の `ClientBuilder` 構築は I/O を伴わないが、`build()` は失敗
     /// しうる (システム証明書のロードなど) ため `Result` で返す。
     pub fn new(args: &Args) -> Result<Self> {
+        let url = args
+            .urls
+            .first()
+            .cloned()
+            .ok_or_else(|| color_eyre::eyre::eyre!("Args::urls is empty"))?;
+        Self::new_with_url(args, url)
+    }
+
+    /// `Args` + 単一 URL から HTTP クライアントを組み立てる (multi-host 用)。
+    ///
+    /// issue #44: multi-host 起動時は host ごとに 1 つずつ `VtsClient` を作り、
+    /// `args.urls` の各 URL を 1 つずつ渡す (`main.rs::run`)。
+    pub fn new_with_url(args: &Args, url: Url) -> Result<Self> {
         let mut builder = Client::builder()
             .user_agent(USER_AGENT)
             .connect_timeout(CONNECT_TIMEOUT)
@@ -115,7 +131,7 @@ impl VtsClient {
         }
 
         Ok(Self {
-            url: args.url.clone(),
+            url,
             http,
             basic_auth,
         })

@@ -23,7 +23,7 @@ use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
 use vozltop::model::VtsStatus;
-use vozltop::state::{App, AppStatus, Tab};
+use vozltop::state::{App, AppStatus, Tab, Workspace};
 
 const W: u16 = 80;
 const H: u16 = 24;
@@ -126,4 +126,40 @@ fn snapshot_help_overlay() {
     let mut app = running_app();
     app.show_help = true;
     assert_snapshot!("help_overlay", render_to_string(&app));
+}
+
+// ---------- multi-host (issue #44) ----------
+
+/// Workspace を 80×24 で描画し、TestBackend の Display 文字列を返す。
+fn render_workspace_to_string(ws: &Workspace) -> String {
+    let backend = TestBackend::new(W, H);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|f| vozltop::ui::render_workspace(f, ws))
+        .expect("draw");
+    format!("{}", terminal.backend())
+}
+
+#[test]
+fn snapshot_multi_host_running_server() {
+    // 3 host の Workspace で Server タブを描画。最上段に Host タブバーが入る。
+    let ws = Workspace::new(vec![
+        ("web-prod-1".to_string(), running_app()),
+        ("web-prod-2".to_string(), running_app()),
+        ("edge-tokyo".to_string(), running_app()),
+    ]);
+    assert_snapshot!("multi_host_running_server", render_workspace_to_string(&ws));
+}
+
+#[test]
+fn snapshot_multi_host_single_is_identical_to_render() {
+    // 単一 host の Workspace は host タブバーを描画せず、`render(f, app)` と
+    // 同一の出力になる (= 既存 snapshot と差分が出ない)。
+    let ws = Workspace::single_host(running_app());
+    let multi_out = render_workspace_to_string(&ws);
+    let plain_out = render_to_string(&running_app());
+    assert_eq!(
+        multi_out, plain_out,
+        "single-host Workspace は render(f, app) と完全同一の出力"
+    );
 }
