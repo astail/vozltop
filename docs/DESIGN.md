@@ -215,8 +215,9 @@ hit% = hit / (hit + miss + bypass + expired + stale + updating + revalidated + s
 ```
 ┌─ vozltop ─────────────────────────────────────────────────┐
 │ Conn  active 142  reading 3  writing 12  waiting 127      │  ← header.rs
-│ RPS   ████████████░░░░░░░░  1,284   5xx ▏  0.3%            │     (3 row)
-│ BW in ▇▇▇▇▇▇▂  12.4 MB/s    out ▇▇▇▇▇▇▇▇▇  84 MB/s        │
+│ RPS   ████████████░░░░░░░░                          1,284  │     (4 row)
+│ in    ▇▇▇▇▇▇▂                                  12.4 MB/s  │
+│ out   ▇▇▇▇▇▇▇▇▇                                  84 MB/s  │
 ├────────────────────────────────────────────────────────────┤
 │ [Server] Upstream  Cache                                  │  ← tab bar
 ├────────────────────────────────────────────────────────────┤

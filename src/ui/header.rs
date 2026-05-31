@@ -88,13 +88,11 @@ pub fn render(f: &mut Frame<'_>, app: &App, area: Rect) {
     }
     if let Some(r) = rows.get(2) {
         let data: Vec<u64> = app.history.bw_in_history().iter().copied().collect();
-        let now = data.last().copied().unwrap_or(0);
-        render_bw_row(f, app, *r, "in   ", &data, now);
+        render_bw_row(f, app, *r, "in   ", &data);
     }
     if let Some(r) = rows.get(3) {
         let data: Vec<u64> = app.history.bw_out_history().iter().copied().collect();
-        let now = data.last().copied().unwrap_or(0);
-        render_bw_row(f, app, *r, "out  ", &data, now);
+        render_bw_row(f, app, *r, "out  ", &data);
     }
 }
 
@@ -178,8 +176,9 @@ fn render_bw_row(
     area: Rect,
     label: &'static str,
     data: &[u64],
-    now: u64,
 ) {
+    let now = data.last().copied().unwrap_or(0);
+
     let [label_area, spark_area, text_area] = Layout::horizontal([
         Constraint::Length(5),  // "in   " or "out  "
         Constraint::Fill(1),    // sparkline (残り)
