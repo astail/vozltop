@@ -154,6 +154,10 @@ async fn event_loop(
     // channel cap = clients.len() で「全 host が同 tick に完了しても drop しない」
     // ことを保証する。各メッセージは (HostId, Result<VtsStatus, FetchError>) で、
     // 受信側が active host だけでなく該当 App に正しくルーティングする。
+    //
+    // `Args::urls` の `required = true` で本来 `clients.len() == 0` は到達しないが、
+    // `mpsc::channel(0)` は panic するため保険として `.max(1)` で底打ちする
+    // (Phase 2 で URL 無しモード等を入れる際にも壊れない)。
     let cap = clients.len().max(1);
     let (fetch_tx, mut fetch_rx) = mpsc::channel::<(HostId, Result<VtsStatus, FetchError>)>(cap);
     // Option<JoinHandle> は Clone を持たないので `vec![None; N]` できない。

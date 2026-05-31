@@ -1,5 +1,6 @@
 ---
 source: tests/ui_snapshots.rs
+assertion_line: 128
 expression: render_to_string(&app)
 ---
 "Conn ████████1/1 ████████  active 1  reading 0  writing 1  waiting 0            "
@@ -16,11 +17,11 @@ expression: render_to_string(&app)
 "   │F4 / /            filter zones by substring                             │   "
 "   │F5                reverse sort direction                                │   "
 "   │1 – 9             choose sort column (tab-specific)                     │   "
+"   │[ / ]             switch host (multi-host; also Shift+H / Shift+L)      │   "
 "   │F10 / q / Ctrl-C  quit                                                  │   "
 "   │                                                                        │   "
 "   │macOS Terminal.app intercepts F1-F4; use letter aliases:                │   "
 "   │  ? = F1   / = F4   q = F10                                             │   "
-"   │                                                                        │   "
 "   └────────────────────────────────────────────────────────────────────────┘   "
 "                                                                                "
 "                                                                                "

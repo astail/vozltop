@@ -127,8 +127,18 @@ impl Workspace {
     }
 
     /// host id 指定で App を取り出す (fetch 結果のルーティング用)。
+    ///
+    /// 通常運用では `clients` と `Workspace` を同じ argv 順 Vec から作るため、
+    /// mpsc 経由で来る host_id は必ず一致する。万一不整合があれば debug ビルドで
+    /// 早期に気付けるように `debug_assert!` を入れている (release では silently
+    /// `None` を返してメッセージを破棄: ユーザー影響を最小化する fail-safe)。
     pub fn app_mut(&mut self, id: &str) -> Option<&mut App> {
-        self.apps.get_mut(id)
+        let app = self.apps.get_mut(id);
+        debug_assert!(
+            app.is_some(),
+            "Workspace::app_mut({id:?}) not found; clients/workspace mismatch?"
+        );
+        app
     }
 
     /// 次の host に切り替える (末尾なら先頭に戻る)。単一 host のときは no-op。
@@ -283,9 +293,13 @@ mod tests {
     }
 
     #[test]
-    fn app_mut_unknown_id_returns_none() {
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "clients/workspace mismatch")]
+    fn app_mut_unknown_id_debug_asserts() {
+        // 通常運用では起こらない fail-safe を debug build で早期に検出する規約
+        // (#44 レビュー指摘)。release build では silently `None` を返す。
         let mut ws = Workspace::single_host(App::new());
-        assert!(ws.app_mut("nonexistent").is_none());
+        let _ = ws.app_mut("nonexistent");
     }
 
     #[test]

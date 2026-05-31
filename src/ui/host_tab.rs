@@ -40,19 +40,17 @@ pub const HOST_TAB_HEIGHT: u16 = 1;
 /// `area.width` が極端に狭い場合は ratatui が右端で clip する。
 pub fn render(f: &mut Frame<'_>, ws: &Workspace, area: Rect) {
     let theme = active_theme(ws);
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(2 + ws.host_count() * 3);
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(2 + ws.host_count() * 2);
     spans.push(Span::styled("HOST  ", theme.header_label));
 
     let active_idx = ws.active_index();
-    for (idx, id) in ws.host_ids().iter().enumerate() {
+    // issue #44 レビュー指摘: `ws.iter().enumerate()` で 1 度回す (旧版は
+    // `host_ids` を回しながら `ws.iter().nth(idx)` で alert を引いていて O(N²))。
+    for (idx, (id, app)) in ws.iter().enumerate() {
         if idx > 0 {
             spans.push(Span::raw("  "));
         }
-        let alerting = ws
-            .iter()
-            .nth(idx)
-            .map(|(_, app)| app.alert_active)
-            .unwrap_or(false);
+        let alerting = app.alert_active;
         let badge = if alerting {
             if theme.mono {
                 "(!)"
@@ -67,12 +65,15 @@ pub fn render(f: &mut Frame<'_>, ws: &Workspace, area: Rect) {
         } else {
             format!("{id}{badge}")
         };
-        let style = if idx == active_idx {
-            theme.row_selected
-        } else if alerting {
-            theme.status_warn
-        } else {
-            Style::default()
+        // issue #44 レビュー指摘: active かつ alerting のときは `row_selected`
+        // (REVERSED) だけだと warn 色が消えるため、`theme.alert` (赤反転) を使う。
+        // 表の `row_is_alerting` と同じスタイル → 画面全体で「アラート = 赤系」が
+        // 揃う。`⚠` バッジは残るが、色も伝えることで気付きやすさを上げる。
+        let style = match (idx == active_idx, alerting) {
+            (true, true) => theme.alert,
+            (true, false) => theme.row_selected,
+            (false, true) => theme.status_warn,
+            (false, false) => Style::default(),
         };
         spans.push(Span::styled(label, style));
     }
@@ -145,6 +146,25 @@ mod tests {
         let out = draw_to_string(&ws, 40);
         // color theme: ⚠ Unicode、mono theme: (!) を別途検証
         assert!(out.contains("⚠"), "alert badge present: {out}");
+    }
+
+    #[test]
+    fn active_and_alerting_host_renders_both_bracket_and_badge() {
+        // issue #44 レビュー指摘: active かつ alerting のとき、ブラケット (active 印)
+        // と ⚠ バッジ (alerting 印) の両方が出る + 色が theme.alert (= row_selected が
+        // status_warn を上書きしない) であることを担保する。
+        let mut ws = Workspace::new(vec![
+            ("a".to_string(), App::new()),
+            ("b".to_string(), App::new()),
+        ]);
+        // active host (idx=0) に alert を立てる
+        ws.app_mut("a").unwrap().alert_active = true;
+        let out = draw_to_string(&ws, 40);
+        assert!(out.contains("[a]"), "active bracket present: {out}");
+        assert!(
+            out.contains("[a]⚠"),
+            "active + alerting host shows both `[...]` and `⚠`: {out}"
+        );
     }
 
     #[test]
