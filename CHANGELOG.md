@@ -11,13 +11,25 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-01
+
+### Added
+
+- 複数 URL を引数に取って multi-host 監視に対応。ヘッダ上段が host タブ、下段が zone タブの 2 層構造になり、`[` / `]` (または `Shift+H` / `Shift+L`) で host を切り替えられる。fetch loop は host ごとに独立して走り、片側が落ちても他方の描画は継続する (closes #44)
+
 ### Changed
 
-- README のヘッダ図と説明を実装に合わせて更新 (`Conn` 行の Gauge、`RPS` 行の Sparkline、`BW` 行の `in`/`out` 左右半々分割)
+- ヘッダの `BW` 行を `in` / `out` の 2 行に分割し、sparkline をフル幅に拡張。従来の左右半々分割では sparkline の解像度が低く突発的なバースト (バースト幅 < 列幅) が潰れて見えなかったため、縦方向に冗長化して 1 行あたり全幅で in / out を独立描画する (closes #119)
+- README のヘッダ図と説明を実装に合わせて更新 (`Conn` 行の Gauge、`RPS` 行の Sparkline、`BW` 行の `in`/`out` 2 行分割)
 
 ### Removed
 
 - `--alert-5xx-pct` CLI フラグと、それに紐づく 5xx 行ハイライト / ベル機能を削除。ヘッダ 2 行目の `5xx N.NN%` 表示も削除。理由: 5xx は production の異常検知で重要だが、ヘッダ右への常時併記はノイズが多く、行レベルで個別に確認した方が情報の precision が高い。`--alert-p95-ms` (p95 レイテンシ閾値) と SLO 監視の経路は維持する。TOML config の `alert_5xx_pct` フィールドも削除 (`alert_p95_ms` は維持)
+
+### Fixed
+
+- ヘッダの RPS / BW in / BW out sparkline が `*` zone (server zone 全体集計) を含む全 zone を一括加算しており、合算値が実トラフィックの約 2 倍になっていた問題を修正。`*` zone は他 zone の合計と等価なので、sparkline 集計時にスキップする (closes #117)
+- `cargo-deb` 3.x の CLI 仕様変更 (`--target-arch` → `--target <triple>`) に追随し、Linux パッケージ生成 (`.deb` / `.rpm`) の release workflow を修正
 
 ## [0.1.0] - 2026-05-31
 
@@ -58,5 +70,6 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 - argv に password / Bearer トークンが平文で乗っていると起動時に stderr で警告するようにした (`ps` 経由の漏洩を防ぐ案内) (#40)
 - URL に埋め込んだ credentials (`https://user:pass@host/...`) を `detect_argv_secret_in` の警告対象に追加。これまで `--user` / `--header` しか検査しておらず、URL 内 password が `ps` で漏洩しても無警告だった。URL 形式は `VOZLTOP_PASSWORD` でも上書きされないため env がセットされていても警告する (closes #107)
 
-[unreleased]: https://github.com/astail/vozltop/compare/v0.1.0...HEAD
+[unreleased]: https://github.com/astail/vozltop/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/astail/vozltop/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/astail/vozltop/releases/tag/v0.1.0
