@@ -93,7 +93,19 @@ impl DerivedSnapshot {
     /// - `cache` は `request_counter` を持たないため RPS は出ない
     ///
     /// 結果として「nginx が client から受けたトラフィック全体」が一次的指標となる。
+    ///
+    /// `*` zone (nginx-module-vts が全 server zone の集計として常時出力する
+    /// 特別な zone) があるときはそれを使う。`for` ループ合算だと `*` 自体と個別
+    /// zone を二重計上して値が 2 倍になるため (issue #117)。`*` が無いビルド
+    /// 向けのフォールバックとして、無い場合は個別 zone を素直に合算する。
     pub fn server_totals(&self) -> (u64, u64, u64) {
+        if let Some(d) = self.server.get("*") {
+            return (
+                d.rates.rps.round() as u64,
+                d.rates.bw_in_per_sec.round() as u64,
+                d.rates.bw_out_per_sec.round() as u64,
+            );
+        }
         let mut rps = 0.0f64;
         let mut bw_in = 0.0f64;
         let mut bw_out = 0.0f64;
@@ -401,5 +413,79 @@ mod tests {
             },
         );
         assert_eq!(d.server_totals(), (0, 0, 0));
+    }
+
+    // ---------- server_totals (issue #117 — `*` zone preference) ----------
+
+    #[test]
+    fn server_totals_prefers_star_zone_when_present() {
+        // 回帰防止: nginx-module-vts は `*` を全 server zone の集計として
+        // 出力するため、`for` ループ合算だと `*` + 個別 zone で値が 2 倍に
+        // なってしまう。`*` がある時はそれだけを採用する。
+        let mut d = DerivedSnapshot::default();
+        d.server.insert(
+            "api".to_string(),
+            ServerDerived {
+                rates: ZoneRates {
+                    rps: 100.0,
+                    bw_in_per_sec: 1_000.0,
+                    bw_out_per_sec: 10_000.0,
+                },
+                ratios: StatusRatios::default(),
+            },
+        );
+        d.server.insert(
+            "www".to_string(),
+            ServerDerived {
+                rates: ZoneRates {
+                    rps: 50.0,
+                    bw_in_per_sec: 500.0,
+                    bw_out_per_sec: 5_000.0,
+                },
+                ratios: StatusRatios::default(),
+            },
+        );
+        d.server.insert(
+            "*".to_string(),
+            ServerDerived {
+                rates: ZoneRates {
+                    rps: 150.0,
+                    bw_in_per_sec: 1_500.0,
+                    bw_out_per_sec: 15_000.0,
+                },
+                ratios: StatusRatios::default(),
+            },
+        );
+        // 期待: `*` だけ。300 / 3_000 / 30_000 (= 二重計上値) ではない。
+        assert_eq!(d.server_totals(), (150, 1_500, 15_000));
+    }
+
+    #[test]
+    fn server_totals_falls_back_to_sum_when_star_absent() {
+        // `*` が無いビルド向けのフォールバック。issue #117 修正前と同じ挙動。
+        let mut d = DerivedSnapshot::default();
+        d.server.insert(
+            "api".to_string(),
+            ServerDerived {
+                rates: ZoneRates {
+                    rps: 100.0,
+                    bw_in_per_sec: 1_000.0,
+                    bw_out_per_sec: 10_000.0,
+                },
+                ratios: StatusRatios::default(),
+            },
+        );
+        d.server.insert(
+            "www".to_string(),
+            ServerDerived {
+                rates: ZoneRates {
+                    rps: 50.0,
+                    bw_in_per_sec: 500.0,
+                    bw_out_per_sec: 5_000.0,
+                },
+                ratios: StatusRatios::default(),
+            },
+        );
+        assert_eq!(d.server_totals(), (150, 1_500, 15_000));
     }
 }

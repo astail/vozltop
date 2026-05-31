@@ -110,6 +110,21 @@ fn server_zone_aggregate_star_present() {
 }
 
 #[test]
+fn server_totals_matches_star_zone_not_double_counted() {
+    // issue #117 回帰防止: ヘッダ sparkline 用の `server_totals()` が `*` zone
+    // の値と一致すること (= 個別 zone と `*` を二重計上した値になっていないこと)。
+    //
+    // fixture では非 `*` zone の合計 = `*` の値なので、二重計上すると 2 倍に
+    // なる。期待は `*` 単独の round 値。
+    let d = run();
+    let star = d.server.get("*").expect("'*' aggregate present");
+    let (rps, bw_in, bw_out) = d.server_totals();
+    assert_eq!(rps, star.rates.rps.round() as u64);
+    assert_eq!(bw_in, star.rates.bw_in_per_sec.round() as u64);
+    assert_eq!(bw_out, star.rates.bw_out_per_sec.round() as u64);
+}
+
+#[test]
 fn upstream_key_is_group_slash_server() {
     let d = run();
     // backend_api/127.0.0.1:9001: delta_rc = 1504 - 2 = 1502
