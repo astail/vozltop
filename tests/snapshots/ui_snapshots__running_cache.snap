@@ -4,10 +4,10 @@ expression: render_to_string(&app)
 ---
 "Conn ████████1/1 ████████  active 1  reading 0  writing 1  waiting 0            "
 "RPS  █                                                               510/s      "
-"in  █                       44.5 KB/s   out █                       84.0 KB/s   "
+"in   █                                                              44.5 KB/s   "
+"out  █                                                              84.0 KB/s   "
 "ZONE       HIT%    MISS      EXPIRED   STALE    USED       IN/s       OUT/s     "
 "demo_cache 100.0%  1         0         0        4.0 KB / 8 9.8 KB/s   19.8 KB/s "
-"                                                                                "
 "                                                                                "
 "                                                                                "
 "                                                                                "

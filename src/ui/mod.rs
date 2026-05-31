@@ -3,21 +3,22 @@
 //! issue #25 で「最低限の画面が出る」状態の stub `render` を提供したあと、
 //! 各 widget は後続 issue で順に埋まる:
 //!
-//! - **issue #27 (本ファイルの 3 行ヘッダ参照先)**: ヘッダ (接続 Gauge + Sparkline)
+//! - **issue #27 (本ファイルの 4 行ヘッダ参照先, #119 で in/out を分離)**: ヘッダ (接続 Gauge + Sparkline)
 //! - issue #28-#30: zone テーブル (Server / Upstream / Cache)
 //! - issue #31: ソート + フィルタの UI
 //! - issue #32: 詳細オーバーレイ
 //! - issue #33: footer + help
 //!
-//! ## レイアウト方針 (issue #27 / #33 統合後)
+//! ## レイアウト方針 (issue #27 / #33 / #119 統合後)
 //!
 //! ```text
 //! ┌──────────────────────────────────────────────────────────────────┐
 //! │ [Stale] consecutive failures: 2                                  │  <- status banner (Stale/Disconnected のみ)
 //! ├──────────────────────────────────────────────────────────────────┤
 //! │ Conn  [█████░░░] 42/120   active 42 reading 3 writing 5 …        │  <- header 行 1
-//! │ RPS   ▁▂▃▅▇▇▆▄   1234/s   | 5xx 0.20%                            │  <- header 行 2
-//! │ in    ▁▂▃▅▇▆▄   1.2 MB/s   out  ▁▂▃▅▇▆▄   4.5 MB/s               │  <- header 行 3
+//! │ RPS   ▁▂▃▅▇▇▆▄                                          1234/s   │  <- header 行 2
+//! │ in    ▁▂▃▅▇▆▄                                         1.2 MB/s   │  <- header 行 3 (#119)
+//! │ out   ▁▂▃▅▇▆▄                                         4.5 MB/s   │  <- header 行 4 (#119)
 //! ├──────────────────────────────────────────────────────────────────┤
 //! │ (本体は後続 issue で実装)                                          │
 //! │                                                                   │
@@ -142,14 +143,14 @@ mod tests {
     }
 
     #[test]
-    fn renders_3_row_header_with_conn_rps_bw_labels() {
+    fn renders_4_row_header_with_conn_rps_bw_labels() {
         let app = App::new();
         let out = draw_to_string(&app, 80, 8);
         // 行 1: Conn ラベル
         assert!(out.contains("Conn"), "out:\n{out}");
         // 行 2: RPS ラベル
         assert!(out.contains("RPS"), "out:\n{out}");
-        // 行 3: BW 系 (in, out ラベル) + 0 B/s プレースホルダ
+        // 行 3 / 4: BW 系 (in, out ラベル) + 0 B/s プレースホルダ (両行)
         assert!(out.contains("in"), "out:\n{out}");
         assert!(out.contains("out"), "out:\n{out}");
         assert!(out.contains("0 B/s"), "out:\n{out}");
