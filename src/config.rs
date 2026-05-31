@@ -5,7 +5,7 @@
 //! - `~/.config/vozltop/config.toml` (XDG) を読み込み、`vozltop @prod` 形式の
 //!   `@alias` 引数を `[hosts.prod]` セクションに解決する
 //! - `[hosts.<alias>]` に書ける項目: `url` / `user` / `interval` / `headers` /
-//!   `insecure` / `no_color` / `alert_5xx_pct` / `alert_p95_ms`
+//!   `insecure` / `no_color` / `alert_p95_ms`
 //! - `[defaults]` セクションで全 host 共通のデフォルトを設定可
 //! - 優先度: CLI フラグ > `[hosts.<alias>]` > `[defaults]` > 組み込み既定
 //!
@@ -31,7 +31,7 @@
 //! url = "https://nginx.prod.example.com/status/format/json"
 //! user = "admin:secret"  # ※ 平文許容、chmod 0600 推奨
 //! interval = 0.5
-//! alert_5xx_pct = 1.0
+//! alert_p95_ms = 500
 //!
 //! [hosts.staging]
 //! url = "https://nginx.staging.example.com/status/format/json"
@@ -91,7 +91,6 @@ pub struct Defaults {
     pub headers: Option<Vec<String>>,
     pub insecure: Option<bool>,
     pub no_color: Option<bool>,
-    pub alert_5xx_pct: Option<f64>,
     pub alert_p95_ms: Option<u64>,
 }
 
@@ -105,7 +104,6 @@ pub struct HostConfig {
     pub headers: Option<Vec<String>>,
     pub insecure: Option<bool>,
     pub no_color: Option<bool>,
-    pub alert_5xx_pct: Option<f64>,
     pub alert_p95_ms: Option<u64>,
 }
 
@@ -254,7 +252,7 @@ mod tests {
 [defaults]
 interval = 2.0
 no_color = true
-alert_5xx_pct = 1.5
+alert_p95_ms = 800
 
 [hosts.prod]
 url = "https://nginx.prod.example.com/status/format/json"
@@ -267,7 +265,7 @@ url = "https://nginx.staging.example.com/status/format/json"
         let c = Config::parse(toml).unwrap();
         assert_eq!(c.defaults.interval, Some(2.0));
         assert_eq!(c.defaults.no_color, Some(true));
-        assert_eq!(c.defaults.alert_5xx_pct, Some(1.5));
+        assert_eq!(c.defaults.alert_p95_ms, Some(800));
         assert_eq!(c.hosts.len(), 2);
         let prod = c.hosts.get("prod").unwrap();
         assert_eq!(

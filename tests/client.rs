@@ -72,7 +72,6 @@ fn args_for(url: Url) -> Args {
         headers: Vec::new(),
         insecure: false,
         no_color: false,
-        alert_5xx_pct: None,
         alert_p95_ms: None,
         config: None,
     }
@@ -235,7 +234,6 @@ async fn fetch_sends_basic_auth_when_user_set() {
         headers: Vec::new(),
         insecure: false,
         no_color: false,
-        alert_5xx_pct: None,
         alert_p95_ms: None,
         config: None,
     };
@@ -264,7 +262,6 @@ async fn fetch_sends_custom_headers() {
         ],
         insecure: false,
         no_color: false,
-        alert_5xx_pct: None,
         alert_p95_ms: None,
         config: None,
     };
@@ -297,7 +294,6 @@ async fn fetch_user_takes_precedence_over_authorization_header() {
         headers: vec![header("authorization", "Bearer should-be-overridden")],
         insecure: false,
         no_color: false,
-        alert_5xx_pct: None,
         alert_p95_ms: None,
         config: None,
     };
@@ -330,7 +326,6 @@ async fn client_builds_with_insecure_flag() {
         headers: Vec::new(),
         insecure: true,
         no_color: true, // 警告のカラーコードを抑制 (テスト出力を汚さない)
-        alert_5xx_pct: None,
         alert_p95_ms: None,
         config: None,
     };

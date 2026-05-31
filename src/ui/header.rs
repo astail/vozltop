@@ -7,7 +7,7 @@
 //! │ [Stale|Disconnected] consecutive failures: N                   │  <- 任意の状態 banner (1 行、ヘッダの「上」)
 //! ├────────────────────────────────────────────────────────────────┤
 //! │ Conn  [█████░░░░] 42/120   active 42  reading 3  writing 5  …  │  <- 行 1
-//! │ RPS   ▁▂▃▅▇▇▆▄▂▁   1234/s   | 5xx 0.20%                        │  <- 行 2
+//! │ RPS   ▁▂▃▅▇▇▆▄▂▁                                       1234/s  │  <- 行 2
 //! │ in    ▁▂▃▅▇▆▄▂▁   1.2 MB/s   out  ▁▂▃▅▇▆▄▂▁   4.5 MB/s         │  <- 行 3
 //! └────────────────────────────────────────────────────────────────┘
 //! ```
@@ -17,13 +17,6 @@
 //! - **Gauge auto-scale**: `connections.worker_connections` は VTS JSON に
 //!   含まれないため、観測中の `rolling_max_active_conns` を分母に使う
 //!   (CLAUDE.md 設計判断より)。`max = 0` のときは `max(1)` で 0 除算を回避。
-//! - **5xx 比率は cumulative**: 「per-tick の 5xx ratio」を出すには `Responses`
-//!   の差分が必要だが、`DerivedSnapshot.server` は per-zone ratio のみで
-//!   counter を持たない。本 PR では「最新スナップショットの全 server zone
-//!   累積カウンタを zone 横断で合算した 5xx 比率」を表示する。長時間
-//!   稼動では値が固定化するが、運用上は十分な指標。per-tick 化は #21 で
-//!   `DerivedSnapshot` に zone 横断 counter を持たせる必要があり、本 PR の
-//!   scope 外。
 //! - **Sparkline data 取り出し**: `History` は `VecDeque<u64>` で履歴を持つ
 //!   が ratatui 0.29 の `Sparkline::data` は `&[u64]` を要求するため、毎
 //!   フレーム `Vec<u64>` を作って描画する。120 件 = 960 B / frame で
@@ -137,18 +130,16 @@ fn render_conn_row(f: &mut Frame<'_>, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(detail), detail_area);
 }
 
-// ---------- 行 2: RPS + 5xx% ----------
+// ---------- 行 2: RPS ----------
 
 fn render_rps_row(f: &mut Frame<'_>, app: &App, area: Rect) {
     let rps_data: Vec<u64> = app.history.rps_history().iter().copied().collect();
     let rps_now = rps_data.last().copied().unwrap_or(0);
-    let pct_5xx = aggregate_5xx_pct(app);
 
-    let [label, spark, rps_text, pct_text] = Layout::horizontal([
+    let [label, spark, rps_text] = Layout::horizontal([
         Constraint::Length(5),  // "RPS "
         Constraint::Fill(1),    // sparkline (残り)
         Constraint::Length(12), // " 1234/s"
-        Constraint::Length(14), // "  5xx N.NN%"
     ])
     .areas(area);
 
@@ -164,15 +155,6 @@ fn render_rps_row(f: &mut Frame<'_>, app: &App, area: Rect) {
         )),
         rps_text,
     );
-    let pct_str = match pct_5xx {
-        Some(p) => format!("  5xx {p:.2}%"),
-        None => "  5xx —".to_string(),
-    };
-    let pct_style = match pct_5xx {
-        Some(p) if p > 0.0 => app.theme.status_err,
-        _ => app.theme.header_value,
-    };
-    f.render_widget(Paragraph::new(Span::styled(pct_str, pct_style)), pct_text);
 }
 
 // ---------- 行 3: BW in / out ----------
@@ -222,33 +204,6 @@ fn render_bw_half(
 
 // ---------- 集計 / フォーマット helper ----------
 
-/// 最新スナップショットの全 server zone を集計して 5xx 比率 (%) を返す。
-///
-/// 分母 (合計レスポンス) が 0 のときは `None` (まだ何も観測していない)。
-/// 戻り値は cumulative (= zone 横断の累計カウンタからの比率)。per-tick の
-/// 5xx ratio は `DerivedSnapshot` の拡張が必要なため scope 外。
-pub(crate) fn aggregate_5xx_pct(app: &App) -> Option<f64> {
-    let snap = app.history.latest()?;
-    let mut total_5xx: u64 = 0;
-    let mut total_all: u64 = 0;
-    for zone in snap.status.server_zones.values() {
-        let r = &zone.responses;
-        total_5xx = total_5xx.saturating_add(r.r5xx);
-        let zone_total = r
-            .r1xx
-            .saturating_add(r.r2xx)
-            .saturating_add(r.r3xx)
-            .saturating_add(r.r4xx)
-            .saturating_add(r.r5xx);
-        total_all = total_all.saturating_add(zone_total);
-    }
-    if total_all == 0 {
-        None
-    } else {
-        Some(100.0 * total_5xx as f64 / total_all as f64)
-    }
-}
-
 /// bytes-per-second を人間可読 ("1.2 MB/s" 等) に整形する。
 ///
 /// 1024 進、小数 1 桁。範囲を `u64::MAX` まで持たせるため最大 TB/s まで扱う
@@ -296,37 +251,6 @@ mod tests {
                 "active": active, "reading": reading, "writing": writing,
                 "waiting": waiting, "accepted": 0, "handled": 0, "requests": 0
             },
-        });
-        let status: VtsStatus = serde_json::from_value(raw).unwrap();
-        Snapshot {
-            at: std::time::Instant::now(),
-            status,
-            derived: Default::default(),
-        }
-    }
-
-    /// 5xx 集計用に server_zones 付きの snapshot を作る。
-    fn snapshot_with_responses(r2xx: u64, r5xx: u64) -> Snapshot {
-        let raw = serde_json::json!({
-            "hostName": "h", "nginxVersion": "1", "moduleVersion": "v",
-            "loadMsec": 0u64, "nowMsec": 1000,
-            "connections": {
-                "active": 0, "reading": 0, "writing": 0,
-                "waiting": 0, "accepted": 0, "handled": 0, "requests": 0
-            },
-            "serverZones": {
-                "default": {
-                    "requestCounter": r2xx + r5xx,
-                    "inBytes": 0, "outBytes": 0,
-                    "responses": {
-                        "1xx": 0, "2xx": r2xx, "3xx": 0, "4xx": 0, "5xx": r5xx,
-                        "miss": 0, "bypass": 0, "expired": 0, "stale": 0,
-                        "updating": 0, "revalidated": 0, "hit": 0, "scarce": 0,
-                    },
-                    "requestMsec": 0,
-                    "requestMsecCounter": 0,
-                }
-            }
         });
         let status: VtsStatus = serde_json::from_value(raw).unwrap();
         Snapshot {
@@ -415,27 +339,10 @@ mod tests {
     }
 
     #[test]
-    fn header_renders_rps_label_and_5xx_when_no_data() {
+    fn header_renders_rps_label_when_no_data() {
         let app = App::new();
         let out = draw(&app, 80, HEADER_HEIGHT);
         assert!(out.contains("RPS"), "out:\n{out}");
-        // データ無し時は 5xx は em-dash で表示
-        assert!(out.contains("5xx"), "out:\n{out}");
-    }
-
-    #[test]
-    fn header_renders_5xx_pct_from_aggregated_zones() {
-        let mut app = App::new();
-        // total = 100, 5xx = 5 → 5.00%
-        app.history.push(snapshot_with_responses(95, 5));
-        let pct = aggregate_5xx_pct(&app).expect("pct present when totals > 0");
-        assert!((pct - 5.0).abs() < 1e-9, "expected 5.0, got {pct}");
-    }
-
-    #[test]
-    fn aggregate_5xx_returns_none_when_no_responses() {
-        let app = App::new();
-        assert!(aggregate_5xx_pct(&app).is_none());
     }
 
     #[test]

@@ -11,20 +11,24 @@
 nginx-module-vts は nginx の vhost / upstream / cache 単位のトラフィック統計を JSON で公開してくれる。`vozltop` はそれを `htop` のように **1 バイナリで起動・即ソート / フィルタ可能・ssh 越しに動く** TUI で眺めるためのツール。
 
 ```
-┌─ vozltop ─────────────────────────────────────────────────┐
-│ Conn  active 142  reading 3  writing 12  waiting 127      │
-│ RPS   ████████████░░░░░░░░  1,284   5xx ▏  0.3%            │
-│ BW in ▇▇▇▇▇▇▂  12.4 MB/s    out ▇▇▇▇▇▇▇▇▇  84 MB/s        │
-├────────────────────────────────────────────────────────────┤
-│ [Server] Upstream  Cache                                  │
-├────────────────────────────────────────────────────────────┤
-│ ZONE             RPS    2xx   4xx  5xx  p95   IN/s  OUT/s │
-│ api.example.com  842   99.1% 0.7% 0.2% 38ms  3MB  24MB    │
-│ www.example.com  321   99.8% 0.1% 0.1% 12ms  5MB  41MB    │
-├────────────────────────────────────────────────────────────┤
-│ F1Help F4Filter F5Sort F10Quit  Tab:NextZone Enter:Detail │
-└────────────────────────────────────────────────────────────┘
+┌─ vozltop ──────────────────────────────────────────────────────────────────┐
+│ Conn █████░░░░░░░░░░░░░░░ 42/120   active 42  reading 3  writing 5  waiting 34 │
+│ RPS  ▁▂▃▅▇▇▆▄▂▁                                                1284/s     │
+│ in   ▁▂▃▅▇▆▄▂▁           12.4 MB/s   out ▁▂▃▅▇▆▄▂▁           84.0 MB/s    │
+├────────────────────────────────────────────────────────────────────────────┤
+│ [Server] Upstream  Cache                                                   │
+├────────────────────────────────────────────────────────────────────────────┤
+│ ZONE             RPS    2xx   4xx  5xx  p95    IN/s   OUT/s                │
+│ api.example.com  842   99.1% 0.7% 0.2% 38ms   3 MB   24 MB                 │
+│ www.example.com  321   99.8% 0.1% 0.1% 12ms   5 MB   41 MB                 │
+├────────────────────────────────────────────────────────────────────────────┤
+│ F1Help F4Filter F5Sort F10Quit  Tab:NextZone Enter:Detail                  │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
+
+- 1 行目 `Conn`: nginx 接続状況。Gauge は `active / 起動以降の rolling-max` (worker_connections は VTS JSON に含まれないため auto-scale)
+- 2 行目 `RPS`: Sparkline (rolling 120 tick) + 現値
+- 3 行目 `in` / `out`: 入出力帯域の Sparkline + 現値 (左右半々)
 
 ## インストール
 
@@ -115,7 +119,7 @@ vozltop https://nginx.example.com/status/format/json \
 url = "https://nginx.prod.example.com/status/format/json"
 user = "admin:secret"
 interval = 0.5
-alert_5xx_pct = 1.0
+alert_p95_ms = 500
 
 [hosts.staging]
 url = "https://nginx.staging.example.com/status/format/json"

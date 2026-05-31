@@ -99,10 +99,6 @@ pub struct Args {
     #[arg(long = "no-color")]
     pub no_color: bool,
 
-    /// 行の 5xx 率がこの % 以上ならアラート表示 (ハイライト + ベル)。範囲 0..=100。
-    #[arg(long = "alert-5xx-pct", value_name = "PCT", value_parser = parse_alert_pct)]
-    pub alert_5xx_pct: Option<f64>,
-
     /// 行の p95 レイテンシがこの ms 以上ならアラート表示 (ハイライト + ベル)。
     #[arg(long = "alert-p95-ms", value_name = "MS")]
     pub alert_p95_ms: Option<u64>,
@@ -160,7 +156,7 @@ impl Args {
     ///
     /// alias 経由 (`vozltop @prod`) の場合、`[hosts.prod]` の URL に positional 引数を
     /// 置換し、CLI で未指定だった `--user` / `--header` / `--interval` / `--insecure` /
-    /// `--no-color` / `--alert-5xx-pct` / `--alert-p95-ms` を host config の値で補完する。
+    /// `--no-color` / `--alert-p95-ms` を host config の値で補完する。
     /// CLI で明示されたフラグは config を上書きする (CLI > config[hosts.<alias>])。
     /// `[defaults]` は本 PR ではスコープ外 (alias 経由でも使わない)。
     pub fn parse_with_config() -> Result<Self, ConfigArgsError> {
@@ -348,13 +344,7 @@ pub fn detect_argv_secret_in(argv: &[String], env_password: Option<String>) -> b
             // bare 形式 (`--user X`) のみ次の arg を値として消費。`=` 一体型は単独で完結。
             prev_takes_value = matches!(
                 arg.as_str(),
-                "-u" | "--user"
-                    | "-H"
-                    | "--header"
-                    | "-i"
-                    | "--interval"
-                    | "--alert-5xx-pct"
-                    | "--alert-p95-ms"
+                "-u" | "--user" | "-H" | "--header" | "-i" | "--interval" | "--alert-p95-ms"
             );
             continue;
         }
@@ -390,7 +380,7 @@ fn find_config_flag_value(argv: &[OsString]) -> Option<PathBuf> {
 /// argv の positional 引数を 1 つだけ探し、`@alias` 形式なら `(index, alias)` を返す。
 ///
 /// 値を取るフラグ (`--user`, `-u`, `--header`, `-H`, `--interval`, `-i`,
-/// `--alert-5xx-pct`, `--alert-p95-ms`, `--config`) の直後の引数は positional ではなく
+/// `--alert-p95-ms`, `--config`) の直後の引数は positional ではなく
 /// 値とみなす。`detect_argv_secret_in` と同じスキップ規則。
 ///
 /// program name (`argv[0]`) もスキップ。
@@ -410,7 +400,6 @@ fn find_positional_alias_index(argv: &[OsString]) -> Option<(usize, String)> {
                     | "--header"
                     | "-i"
                     | "--interval"
-                    | "--alert-5xx-pct"
                     | "--alert-p95-ms"
                     | "--config"
             );
@@ -428,7 +417,7 @@ fn find_positional_alias_index(argv: &[OsString]) -> Option<(usize, String)> {
 /// host config の値を argv に注入する。CLI で明示済みのフラグは上書きしない。
 ///
 /// - `argv[alias_idx]` を `host.url` に書き換え
-/// - `host.user`/`headers`/`interval`/`insecure`/`no_color`/`alert_5xx_pct`/`alert_p95_ms`
+/// - `host.user`/`headers`/`interval`/`insecure`/`no_color`/`alert_p95_ms`
 ///   のうち、CLI に同名フラグが無いものを末尾に append する (clap が後勝ちなので
 ///   prepend より append の方が「CLI が後に来て上書きする」の semantics と整合)
 pub(crate) fn apply_host_to_argv(argv: &mut Vec<OsString>, alias_idx: usize, host: &HostConfig) {
@@ -473,12 +462,6 @@ pub(crate) fn apply_host_to_argv(argv: &mut Vec<OsString>, alias_idx: usize, hos
     if host.no_color == Some(true) && !has_flag(&["--no-color"]) {
         argv.push(OsString::from("--no-color"));
     }
-    if let Some(pct) = host.alert_5xx_pct {
-        if !has_flag(&["--alert-5xx-pct"]) {
-            argv.push(OsString::from("--alert-5xx-pct"));
-            argv.push(OsString::from(pct.to_string()));
-        }
-    }
     if let Some(ms) = host.alert_p95_ms {
         if !has_flag(&["--alert-p95-ms"]) {
             argv.push(OsString::from("--alert-p95-ms"));
@@ -500,17 +483,6 @@ pub fn parse_interval(s: &str) -> Result<f64, String> {
     if !(MIN_INTERVAL_SECS..=MAX_INTERVAL_SECS).contains(&v) {
         return Err(format!(
             "interval must be between {MIN_INTERVAL_SECS} and {MAX_INTERVAL_SECS} seconds (got {v})"
-        ));
-    }
-    Ok(v)
-}
-
-/// `--alert-5xx-pct` の値パーサ。0..=100 の有限な % のみ受理する。
-pub fn parse_alert_pct(s: &str) -> Result<f64, String> {
-    let v: f64 = s.parse().map_err(|_| format!("`{s}` is not a number"))?;
-    if !v.is_finite() || !(0.0..=100.0).contains(&v) {
-        return Err(format!(
-            "--alert-5xx-pct must be between 0 and 100 (got {s:?})"
         ));
     }
     Ok(v)
@@ -811,44 +783,13 @@ mod tests {
     #[test]
     fn args_alert_flags_default_to_none() {
         let a = try_parse(&["vozltop", "http://x/s"]).unwrap();
-        assert_eq!(a.alert_5xx_pct, None);
         assert_eq!(a.alert_p95_ms, None);
     }
 
     #[test]
     fn args_parses_alert_flags() {
-        let a = try_parse(&[
-            "vozltop",
-            "http://x/s",
-            "--alert-5xx-pct",
-            "1.5",
-            "--alert-p95-ms",
-            "500",
-        ])
-        .unwrap();
-        assert_eq!(a.alert_5xx_pct, Some(1.5));
+        let a = try_parse(&["vozltop", "http://x/s", "--alert-p95-ms", "500"]).unwrap();
         assert_eq!(a.alert_p95_ms, Some(500));
-    }
-
-    #[test]
-    fn parse_alert_pct_accepts_boundaries() {
-        assert_eq!(parse_alert_pct("0").unwrap(), 0.0);
-        assert_eq!(parse_alert_pct("100").unwrap(), 100.0);
-        assert_eq!(parse_alert_pct("0.5").unwrap(), 0.5);
-    }
-
-    #[test]
-    fn parse_alert_pct_rejects_out_of_range_and_nonfinite() {
-        assert!(parse_alert_pct("-0.1").is_err());
-        assert!(parse_alert_pct("100.1").is_err());
-        assert!(parse_alert_pct("NaN").is_err());
-        assert!(parse_alert_pct("abc").is_err());
-    }
-
-    #[test]
-    fn args_rejects_out_of_range_alert_pct_at_clap_layer() {
-        let err = try_parse(&["vozltop", "http://x/s", "--alert-5xx-pct", "150"]).unwrap_err();
-        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
     }
 
     #[test]
@@ -902,7 +843,6 @@ mod tests {
             headers: Vec::new(),
             insecure: false,
             no_color: flag,
-            alert_5xx_pct: None,
             alert_p95_ms: None,
             config: None,
         }
