@@ -20,6 +20,14 @@ updates:
         update-types: ["patch", "minor"]
     # major bump は groups に含めず単独 PR で出す（CHANGELOG 確認とテスト更新を伴うため、
     # patch/minor のまとめ PR とは別レビュー単位にしたい）
+    ignore:
+      # ratatui は v1 期間中 0.29.x に固定する方針 (CLAUDE.md /
+      # docs/notes/ratatui-030-evaluation.md 参照)。major bump を毎週
+      # 提案されると review コストの割に merge しないので ignore する。
+      # v1 リリース後に 0.30+ への移行を別途検討する際は、本ルールを
+      # 一時的に削除して PR を再生成させる。
+      - dependency-name: "ratatui"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
