@@ -18,7 +18,8 @@
 //! - `Tab::Upstream`: `detail_zone` は `"group/host:port"` 表記 (table と同じ規約)
 //! - `Tab::Cache`: `now.cache_zones[name]` を引く。histogram は常に「なし」扱い。
 //!
-//! Esc での閉鎖は `main.rs::handle_key` 側で `app.detail_zone = None` を立てる。
+//! Esc / Enter での閉鎖は `main.rs::handle_key` 側で `app.detail_zone = None` を立てる
+//! (Enter トグルは issue #136)。
 
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};

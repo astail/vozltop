@@ -147,7 +147,7 @@ vozltop/
 | Tab / Shift+Tab | zone 種別切替（Server → Upstream → Cache） |
 | ↑ ↓ / k j | 行カーソル移動 |
 | PgUp / PgDn | ページ送り |
-| Enter | 選択行の詳細オーバーレイ |
+| Enter | 選択行の詳細オーバーレイを開く / 表示中は閉じる |
 | Esc | 詳細 / フィルタ解除 |
 | F1 | ヘルプ |
 | F4 / `/` | フィルタ（zone 名 substring） |

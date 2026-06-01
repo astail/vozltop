@@ -218,7 +218,7 @@ NO_COLOR=1 vozltop http://localhost/status/format/json
 |------|------|
 | Tab / Shift+Tab | zone 種別切替 |
 | ↑ ↓ / k j | 行カーソル移動 |
-| Enter | 詳細オーバーレイ |
+| Enter | 詳細オーバーレイを開く / 表示中は閉じる |
 | Esc | 詳細 / フィルタ解除 |
 | F1 | ヘルプ |
 | F4 / `/` | zone 名フィルタ |
