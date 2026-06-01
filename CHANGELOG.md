@@ -12,6 +12,12 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 ## [Unreleased]
 
 
+## [0.3.1] - 2026-06-02
+
+### Fixed
+
+- リリース運用上の不整合を修正するためのメンテナンスリリース。v0.3.0 では Cargo.toml のバージョン bump と tag push のタイミングがずれたため、Homebrew tap (`astail/homebrew-tap`) 経由で `brew install astail/tap/vozltop` した場合に同梱バイナリの `--version` 表示やアーカイブ名と tag 表記が綺麗に揃わない問題が発生していた。v0.3.1 では Cargo.toml / Cargo.lock の version を 0.3.1 に揃えた状態で tag を切り直し、配布物 (`vozltop-0.3.1-<target>.tar.gz` / `.deb` / `.rpm`) を一括で再生成する
+
 ## [0.3.0] - 2026-06-01
 
 ### Added
@@ -103,12 +109,8 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 - argv に password / Bearer トークンが平文で乗っていると起動時に stderr で警告するようにした (`ps` 経由の漏洩を防ぐ案内) (#40)
 - URL に埋め込んだ credentials (`https://user:pass@host/...`) を `detect_argv_secret_in` の警告対象に追加。これまで `--user` / `--header` しか検査しておらず、URL 内 password が `ps` で漏洩しても無警告だった。URL 形式は `VOZLTOP_PASSWORD` でも上書きされないため env がセットされていても警告する (closes #107)
 
-[unreleased]: https://github.com/astail/vozltop/compare/v0.2.1...HEAD
-[0.2.1]: https://github.com/astail/vozltop/compare/v0.2.0...v0.2.1
-[0.2.0]: https://github.com/astail/vozltop/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/astail/vozltop/releases/tag/v0.1.0
-
-## [unreleased]: https://github.com/astail/vozltop/compare/v0.3.0...HEAD
+[unreleased]: https://github.com/astail/vozltop/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/astail/vozltop/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/astail/vozltop/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/astail/vozltop/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/astail/vozltop/compare/v0.1.0...v0.2.0
