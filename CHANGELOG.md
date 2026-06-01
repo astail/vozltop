@@ -11,6 +11,19 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-01
+
+### Added
+
+- Homebrew tap `astail/homebrew-tap` 経由でのインストールに対応。`brew install astail/tap/vozltop` で macOS arm64 / Linux x86_64 musl / Linux aarch64 musl の prebuilt バイナリが入る。tap リポジトリ側は本リポジトリの `packaging/homebrew/vozltop.rb.template` を元に手動更新する運用 (Phase 2 で release workflow から自動 bump 候補)
+
+### Changed
+
+- 依存クレート `toml` を 0.8 → 1.1 に更新。`toml::from_str` が toml 1.x で `parse` + `serde` の両 feature を要求するように分離されたため、`Cargo.toml` の features 指定を `["parse", "serde"]` に変更 (#127)
+- 依存クレート `directories` を 5 → 6 に更新。`ProjectDirs::from` / `config_dir()` の API は互換のため呼び出し側コードの変更は無し (#126)
+- GitHub Actions の release workflow で使うアクションを更新: `actions/upload-artifact` 4 → 7 (#123)、`softprops/action-gh-release` 2 → 3 (#124)、`actions/download-artifact` 4 → 8 (#125)
+- `.github/dependabot.yml` の cargo セクションに ratatui の major bump (`version-update:semver-major`) を ignore するルールを追加。CLAUDE.md / `docs/notes/ratatui-030-evaluation.md` で v1 期間中は 0.29.x に固定する方針のため、毎週 0.30 への bump PR が再生成されるのを止める (#131)
+
 ### Fixed
 
 - `vozltop --version` / `--help` が exit code 1 で color-eyre 経由のエラー表示になっていた問題を修正。issue #46 で `Args::parse()` から `Args::parse_with_config_from` (`try_parse_from` ベース) に切り替えた際に、clap が `--version` / `--help` を `Err(clap::Error)` (`ErrorKind::DisplayVersion` / `DisplayHelp`) で返すケースを正常情報表示として処理する分岐が抜けていた。これらの kind だけ `e.exit()` (stdout + exit 0) に委譲し、それ以外の parse error は従来通り `ConfigArgsError` 経由で main の color-eyre フォーマッタに流す。あわせて `tests/bin_smoke.rs` を新設し、ビルド済みバイナリの exit code を子プロセス起動で検証する (closes #129)
@@ -74,6 +87,7 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 - argv に password / Bearer トークンが平文で乗っていると起動時に stderr で警告するようにした (`ps` 経由の漏洩を防ぐ案内) (#40)
 - URL に埋め込んだ credentials (`https://user:pass@host/...`) を `detect_argv_secret_in` の警告対象に追加。これまで `--user` / `--header` しか検査しておらず、URL 内 password が `ps` で漏洩しても無警告だった。URL 形式は `VOZLTOP_PASSWORD` でも上書きされないため env がセットされていても警告する (closes #107)
 
-[unreleased]: https://github.com/astail/vozltop/compare/v0.2.0...HEAD
+[unreleased]: https://github.com/astail/vozltop/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/astail/vozltop/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/astail/vozltop/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/astail/vozltop/releases/tag/v0.1.0
