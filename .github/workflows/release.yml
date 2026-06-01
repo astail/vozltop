@@ -120,7 +120,7 @@ jobs:
           echo "archive=${archive}" >> "$GITHUB_OUTPUT"
 
       - name: artifact をアップロード
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: vozltop-${{ matrix.target }}
           path: |
@@ -222,7 +222,7 @@ jobs:
           done
 
       - name: パッケージを artifact 化
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: vozltop-packages-${{ matrix.target }}
           path: |
