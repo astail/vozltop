@@ -11,6 +11,22 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 
 ## [Unreleased]
 
+
+## [0.3.0] - 2026-06-01
+
+### Added
+
+- feat(ui/detail): histogram を横向きバーに置き換え (#138) (ASTEL)
+- feat(ui/detail): Enter でも詳細オーバーレイを閉じられるようにする (#136) (#137) (ASTEL)
+
+### Fixed
+
+- fix(ui/detail): histogram バーを PDF 化する (#134) (#135) (ASTEL)
+
+### Changed
+
+- docs: fix README box alignment and add English translation (#133) (ASTEL)
+
 ## [0.2.1] - 2026-06-01
 
 ### Added
@@ -88,6 +104,12 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 - URL に埋め込んだ credentials (`https://user:pass@host/...`) を `detect_argv_secret_in` の警告対象に追加。これまで `--user` / `--header` しか検査しておらず、URL 内 password が `ps` で漏洩しても無警告だった。URL 形式は `VOZLTOP_PASSWORD` でも上書きされないため env がセットされていても警告する (closes #107)
 
 [unreleased]: https://github.com/astail/vozltop/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/astail/vozltop/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/astail/vozltop/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/astail/vozltop/releases/tag/v0.1.0
+
+## [unreleased]: https://github.com/astail/vozltop/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/astail/vozltop/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/astail/vozltop/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/astail/vozltop/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/astail/vozltop/releases/tag/v0.1.0
