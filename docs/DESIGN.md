@@ -240,7 +240,7 @@ Enter で中央 50% に詳細オーバーレイ:
         ┌─ api.example.com ──────────────────────┐
         │ p50  18ms   p95  38ms   p99  142ms     │
         │                                        │
-        │     ▁▂▃▆█▇▅▃▂▁                         │  ← BarChart (buckets)
+        │     █▇▅▃▂▁▂▃▅▇█                         │  ← 横向き BarChart (buckets)
         │  5  10  25  50  100  250  500  1000 ms │     ← 軸ラベルは
         │                                        │       requestBuckets.msecs から
         │                                        │       実行時に生成（ハードコードしない）
