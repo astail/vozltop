@@ -11,6 +11,9 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 
 ## [Unreleased]
 
+### Security
+
+- 依存クレート `ratatui` を 0.29 → 0.30 に更新。transitive で混入していた `paste 1.0.15` (RUSTSEC-2024-0436: unmaintained) と `lru 0.12.5` (RUSTSEC-2026-0002: `IterMut` Stacked Borrows 違反) を同時に解消する。`ratatui 0.30` で `paste` 依存は drop され、`lru` は patched 済みの 0.16.x にバンプされた。vozltop 側は `Sparkline::data(&[u64])` / `Paragraph::alignment(Alignment::*)` が 0.30 でも互換のためソース変更は不要 (#144, #145)
 
 ## [0.3.1] - 2026-06-02
 

@@ -2,11 +2,13 @@
 
 issue [#14](https://github.com/astail/vozltop/issues/14) の調査結果と判断を記録する。後で 0.30 へ引き上げる際に再評価しやすくするためのメモ。
 
-> **2026-05-27 補足**: 本評価当時に存在した「MSRV 1.74 vs 0.30 要求 MSRV 1.86 の衝突」という制約は、issue [#79](https://github.com/astail/vozltop/issues/79) で MSRV 宣言・CI ジョブを drop したため**失効**しています。とはいえ 0.29 維持の判断は他の観点（移行コスト / dependabot 自動追従 / v1 期間の churn 回避）でも支持されるため、結論は据え置きです。再評価時はこの補足を踏まえて MSRV 行は無視してください。
+> **2026-06-02 追記**: 本評価当時の「v1 期間中は 0.29 維持」結論は撤回し、ratatui を **0.30** に bump 済み (#144 / #145 で同時対応)。動機は RUSTSEC-2024-0436 (paste unmaintained) / RUSTSEC-2026-0002 (lru `IterMut` unsoundness) の解消。実際に移行してみると、本評価で挙げていた breaking のうち vozltop が触れているもの (`Alignment` / `Sparkline::data(&[u64])` / `Table::new(rows, widths)`) はすべて 0.30 でも 0.29 互換に動作するため、**ソース側の変更は不要**だった。`Cargo.toml` の 1 行 bump (+ Cargo.lock + dependabot.yml の ignore 削除) のみ。
+
+> **2026-05-27 補足**: 本評価当時に存在した「MSRV 1.74 vs 0.30 要求 MSRV 1.86 の衝突」という制約は、issue [#79](https://github.com/astail/vozltop/issues/79) で MSRV 宣言・CI ジョブを drop したため**失効**しています。
 
 ## TL;DR
 
-**vozltop v1 期間中は ratatui 0.29 系を採用する。0.30 への追従は別 PR + 再評価で行う。**
+**~~vozltop v1 期間中は ratatui 0.29 系を採用する。0.30 への追従は別 PR + 再評価で行う。~~** (撤回: 2026-06-02。RustSec advisory 解消のため 0.30 へ bump 済み)
 
 ## 評価対象
 
@@ -97,18 +99,20 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 - 必要に応じて `=0.29.0` まで pin することも検討するが、patch は追従したいので `"0.29"` を推奨
 - `default-features = false` + `crossterm` のみで `termion` / `termwiz` を除外しビルドサイズを抑える
 
-## 0.30 へ移行する際のチェックリスト (将来用)
+## 0.30 へ移行する際のチェックリスト (2026-06-02 実施済み)
 
-将来 MSRV を 1.86+ にした後、以下を順に実施する:
+`#144` / `#145` 対応で実施した移行手順 (チェック結果は実 PR の diff を参照):
 
-- [ ] `Cargo.toml` の `ratatui = "0.29"` → `"0.30"`
-- [ ] `Table::new(rows).widths(widths)` → `Table::new(rows, widths)` を `rg` で機械置換
-- [ ] `Sparkline::data(&[u64])` 呼び出しの動作確認 (`SparklineBar::from(u64)` 経由)
-- [ ] `layout::Alignment` の参照を `HorizontalAlignment` へリネーム
-- [ ] TestBackend / insta snapshot の更新差分を `cargo insta review`
-- [ ] `cargo clippy --all-targets -- -D warnings` を pass
+- [x] `Cargo.toml` の `ratatui = "0.29"` → `"0.30"`
+- [x] `Table::new(rows).widths(widths)` → `Table::new(rows, widths)` の機械置換 → vozltop 側は元から 2 引数形式で利用しており**変更不要**
+- [x] `Sparkline::data(&[u64])` 呼び出しの動作確認 → `From<u64> for SparklineBar` 経由でそのままコンパイル通過
+- [x] `layout::Alignment` の参照 → 0.30 でも `Alignment` エイリアスが残っており**変更不要**
+- [x] TestBackend / insta snapshot の更新差分を `cargo insta review` → 差分なし
+- [x] `cargo clippy --all-targets -- -D warnings` を pass
+- [x] `cargo fmt --check` を pass
+- [x] `.github/dependabot.yml` の `ratatui major bump ignore` ルールを削除
 
-参考: [BREAKING-CHANGES.md](https://github.com/ratatui/ratatui/blob/ratatui-v0.30.0/BREAKING-CHANGES.md) を毎回必ず参照すること。
+参考: [BREAKING-CHANGES.md](https://github.com/ratatui/ratatui/blob/ratatui-v0.30.0/BREAKING-CHANGES.md)
 
 ## 参考リンク
 

@@ -19,7 +19,7 @@
 //!   含まれないため、観測中の `rolling_max_active_conns` を分母に使う
 //!   (CLAUDE.md 設計判断より)。`max = 0` のときは `max(1)` で 0 除算を回避。
 //! - **Sparkline data 取り出し**: `History` は `VecDeque<u64>` で履歴を持つ
-//!   が ratatui 0.29 の `Sparkline::data` は `&[u64]` を要求するため、毎
+//!   が ratatui の `Sparkline::data` は連続スライス相当を要求するため、毎
 //!   フレーム `Vec<u64>` を作って描画する。120 件 = 960 B / frame で
 //!   許容コスト。
 //! - **bytes/s 表示**: 本プロジェクトはまだ `humansize` を依存に加えていない

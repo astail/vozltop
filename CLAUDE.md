@@ -104,7 +104,7 @@ crossterm events (key, resize, ctrl-c)
 
 ## 依存クレート
 
-- `ratatui` **0.29.x** (= 0.29) — TUI（Sparkline / Gauge / Table / BarChart 同梱）。v1 期間中は 0.30 へ追従しない (詳細: [docs/notes/ratatui-030-evaluation.md](docs/notes/ratatui-030-evaluation.md))
+- `ratatui` **0.30.x** (= 0.30) — TUI（Sparkline / Gauge / Table / BarChart 同梱）。RUSTSEC-2024-0436 (paste unmaintained) / RUSTSEC-2026-0002 (lru IterMut unsoundness) 解消のため 0.29 から 0.30 へ bump 済み (詳細: [docs/notes/ratatui-030-evaluation.md](docs/notes/ratatui-030-evaluation.md))
 - `crossterm` 0.29+ (`event-stream`) — ターミナルバックエンド + 非同期 `EventStream`
 - `tokio` (`rt`, `macros`, `time`, `signal`) — 非同期ランタイム（シングルスレッド）
 - `futures-util` — `EventStream` への `StreamExt::next()` 適用（`tokio-stream` ではなく `futures` 側を使う）
