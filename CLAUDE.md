@@ -196,6 +196,8 @@ ab -n 5000 -c 50 http://localhost:8080/    # トラフィック生成
 cargo run -- http://localhost:8080/status/format/json --interval 0.5
 ```
 
+詳細オーバーレイの histogram (`<=5  <=10  <=50 ...  >10000`) を各バケットに分散して目視確認したい場合は [docs/HISTOGRAM_DEMO.md](docs/HISTOGRAM_DEMO.md) の手順 (Python slow server + nginx proxy_pass + ab fleet)。
+
 ## 実装順序（v1）
 
 1. ドキュメント整備（このファイル / DESIGN.md / ROADMAP.md / README.md）
