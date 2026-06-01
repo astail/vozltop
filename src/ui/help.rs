@@ -9,7 +9,7 @@
 //! - Tab / Shift+Tab: zone 種別切替
 //! - ↑↓ / k j: 行カーソル移動
 //! - PgUp / PgDn: ページ送り
-//! - Enter: 詳細オーバーレイ
+//! - Enter: 詳細オーバーレイ (オーバーレイ表示中は閉じる; issue #136)
 //! - Esc: 詳細 / フィルタ解除 / help を閉じる
 //! - F4 / `/`: フィルタ
 //! - F5: ソート方向反転
@@ -38,7 +38,7 @@ const HELP_ROWS: &[(&str, &str)] = &[
     ),
     ("Up / Down", "move row cursor (also: k / j)"),
     ("PgUp / PgDn", "page up / down"),
-    ("Enter", "open zone detail overlay"),
+    ("Enter", "open zone detail overlay (or close it)"),
     ("Esc", "close detail / clear filter / close help"),
     ("F4 / /", "filter zones by substring"),
     ("F5", "reverse sort direction"),

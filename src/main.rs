@@ -342,8 +342,12 @@ fn handle_app_key(app: &mut App, key: KeyEvent) {
                 app.apply_sort_key(d as u8);
             }
         }
-        // Enter: cursor が指す zone の詳細オーバーレイを開く (#32)。
-        // help が開いているときは Enter を無視する (モーダル優先)。
+        // Enter: 詳細オーバーレイ表示中はトグルで閉じる (#136)。それ以外は
+        // cursor が指す zone の詳細を開く (#32)。help が開いているときは
+        // モーダル優先で Enter を無視する。
+        KeyCode::Enter if app.detail_zone.is_some() => {
+            app.detail_zone = None;
+        }
         KeyCode::Enter if !app.show_help => {
             if let Some(zone) = ui::table::selected_zone(app) {
                 app.detail_zone = Some(zone);
@@ -571,6 +575,19 @@ mod tests {
         assert!(app.detail_zone.is_some());
         handle_app_key(&mut app, press(KeyCode::Esc));
         assert!(app.detail_zone.is_none(), "Esc should close detail");
+    }
+
+    #[test]
+    fn enter_closes_detail_when_open() {
+        // issue #136: 詳細オーバーレイ表示中は Enter もトグルで閉じる。
+        let mut app = app_with_server_zone("alpha");
+        handle_app_key(&mut app, press(KeyCode::Enter));
+        assert!(app.detail_zone.is_some(), "Enter opens detail");
+        handle_app_key(&mut app, press(KeyCode::Enter));
+        assert!(
+            app.detail_zone.is_none(),
+            "second Enter closes detail (toggle)"
+        );
     }
 
     // ---------- ソート / フィルタ (issue #31) ----------
