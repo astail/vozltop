@@ -52,11 +52,10 @@ clap = { version = "4", features = ["derive"] }
 color-eyre = "0.6"
 crossterm = { version = "0.29", features = ["event-stream"] }
 futures-util = { version = "0.3", default-features = false }
-# issue #25: ratatui 既定の crossterm backend を再有効化。これにより transitive
-# に crossterm 0.28 が同居するが (event loop 側は 0.29 を直接使用)、deny.toml の
-# `multiple-versions = "warn"` 設定で CI は通る (PR #84)。ratatui 0.30 +
-# ratatui-crossterm への移行で 0.29 に統一する案は別途 issue #14 で検討する。
-ratatui = "0.29"
+# ratatui 0.30 で paste/lru の transitive 依存が drop され、RUSTSEC-2024-0436
+# (paste unmaintained) と RUSTSEC-2026-0002 (lru IterMut Stacked Borrows) を
+# 同時に解消する (issue #144 / #145)。詳細: docs/notes/ratatui-030-evaluation.md
+ratatui = "0.30"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "gzip"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
