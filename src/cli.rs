@@ -198,7 +198,23 @@ impl Args {
                 }
             }
         }
-        Ok(Self::try_parse_from(argv)?)
+        match Self::try_parse_from(argv) {
+            Ok(args) => Ok(args),
+            Err(e) => {
+                // clap は `--version` / `--help` を Err(clap::Error) で返す
+                // (kind = DisplayVersion / DisplayHelp)。これらは「正常な情報表示」
+                // 用の特殊な variant で、本来 stdout に書いて exit 0 すべき。
+                // 通常の Args::parse() なら clap が内部で e.exit() を呼ぶが、
+                // ここは try_parse_from 経由なので呼び出し側で同等の処理が必要。
+                // それ以外の parse error は従来通り ConfigArgsError::Clap で返し、
+                // main.rs 側の color-eyre フォーマッタに任せる。
+                use clap::error::ErrorKind;
+                if matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) {
+                    e.exit();
+                }
+                Err(e.into())
+            }
+        }
     }
 
     /// `--no-color` フラグと `NO_COLOR` 環境変数の OR 評価。

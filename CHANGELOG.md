@@ -11,6 +11,10 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 
 ## [Unreleased]
 
+### Fixed
+
+- `vozltop --version` / `--help` が exit code 1 で color-eyre 経由のエラー表示になっていた問題を修正。issue #46 で `Args::parse()` から `Args::parse_with_config_from` (`try_parse_from` ベース) に切り替えた際に、clap が `--version` / `--help` を `Err(clap::Error)` (`ErrorKind::DisplayVersion` / `DisplayHelp`) で返すケースを正常情報表示として処理する分岐が抜けていた。これらの kind だけ `e.exit()` (stdout + exit 0) に委譲し、それ以外の parse error は従来通り `ConfigArgsError` 経由で main の color-eyre フォーマッタに流す。あわせて `tests/bin_smoke.rs` を新設し、ビルド済みバイナリの exit code を子プロセス起動で検証する (closes #129)
+
 ## [0.2.0] - 2026-06-01
 
 ### Added
