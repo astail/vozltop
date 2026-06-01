@@ -8,7 +8,7 @@
 //! 2. **中段**: 1 tick 分の bucket 別件数 (PDF) を 1 行 1 bucket の横向き
 //!    バーで可視化する。vts の `requestBuckets.counters` は累積 (CDF) で返るので、
 //!    隣接 bucket 間の差分を取って「その bucket レンジに入った件数」に変換してから
-//!    描画する (issue #134)。p95 が落ちる行は `▶` マーカー + 行ハイライトで強調する。
+//!    描画する (issue #134)。
 //!    軸ラベルは `requestBuckets.msecs` から実行時に組み立てる (ハードコード禁止)。
 //!    histogram なし zone は `No histogram data` に置き換える。
 //! 3. **下段**: 各レスポンス分類のカウント (`1xx`〜`5xx` の累積値)。
@@ -60,15 +60,10 @@ pub struct PercentileTriple {
 ///
 /// label は `requestBuckets.msecs[i]` から `<=N` の形で組み立てる
 /// (`msecs` を超えた最終 bucket は `>N`)。
-///
-/// `p95_bucket` は p95 が落ちる bucket の index。上段 `p95 87ms` との
-/// 対応を取るため行ハイライトに使う。`PercentileResult::Value` /
-/// `Overflow` のときのみ `Some`、`Average` / `NoData` (= 初 tick) は `None`。
 #[derive(Debug, Clone, PartialEq)]
 pub struct HistogramBars {
     pub bars: Vec<(String, u64)>,
     pub max: u64,
-    pub p95_bucket: Option<usize>,
 }
 
 // ---------- build ----------
@@ -295,7 +290,7 @@ fn percentiles_and_bars_request(
             PercentileResult::NoData,
         ),
     };
-    let bars = bars_from_buckets(now_b, prev, p95);
+    let bars = bars_from_buckets(now_b, prev);
     (PercentileTriple { p50, p95, p99 }, Some(bars))
 }
 
@@ -311,14 +306,7 @@ fn percentiles_and_bars_request(
 /// 失敗系のフォールバック:
 /// - `prev` 不在 / shape mismatch のときは `now.counters` を CDF とみなして
 ///   そのまま PDF 化する (初 tick でも「形」だけは見えるよう)。
-///
-/// `p95` が `Value` / `Overflow` のときは、対応する bucket index を
-/// `p95_bucket` に入れる。`Average` / `NoData` (初 tick) は `None`。
-fn bars_from_buckets(
-    now: &Buckets,
-    prev: Option<&Buckets>,
-    p95: PercentileResult,
-) -> HistogramBars {
+fn bars_from_buckets(now: &Buckets, prev: Option<&Buckets>) -> HistogramBars {
     let len = now.msecs.len();
     let prev_counters: Option<&[u64]> = prev
         .filter(|p| p.msecs == now.msecs && p.counters.len() == now.counters.len())
@@ -338,33 +326,7 @@ fn bars_from_buckets(
         bars.push((label, bin));
     }
     let max = bars.iter().map(|(_, v)| *v).max().unwrap_or(0);
-    let p95_bucket = find_p95_bucket(p95, &now.msecs);
-    HistogramBars {
-        bars,
-        max,
-        p95_bucket,
-    }
-}
-
-/// p95 が落ちる bucket の index を返す。
-///
-/// - `Value(ms)`: `msecs[i] >= ms` を満たす最小 i (全境界を超える場合は
-///   最終 bucket = `>N` の catch-all)。
-/// - `Overflow(_)`: 最終 bucket。
-/// - `Average(_)` / `NoData`: 対応する bucket が定まらないので `None`。
-fn find_p95_bucket(p95: PercentileResult, msecs: &[u64]) -> Option<usize> {
-    if msecs.is_empty() {
-        return None;
-    }
-    let last = msecs.len() - 1;
-    match p95 {
-        PercentileResult::Value(ms) => {
-            let target = ms.ceil() as u64;
-            Some(msecs.iter().position(|&b| b >= target).unwrap_or(last))
-        }
-        PercentileResult::Overflow(_) => Some(last),
-        PercentileResult::Average(_) | PercentileResult::NoData => None,
-    }
+    HistogramBars { bars, max }
 }
 
 /// `requestBuckets.msecs` から bucket の表示 label を組み立てる。
@@ -454,7 +416,7 @@ pub fn render_overlay(f: &mut Frame<'_>, app: &App, frame_area: Rect) {
     .areas(inner);
 
     f.render_widget(top_paragraph(&view, app), top);
-    render_middle(f, app, &view, mid);
+    render_middle(f, &view, mid);
     f.render_widget(bottom_paragraph(&view, app), bottom);
 }
 
@@ -494,12 +456,10 @@ fn top_paragraph<'a>(view: &'a DetailView, app: &App) -> Paragraph<'a> {
 /// 中段 (横向きバー or 「No histogram data」)。
 ///
 /// 各 bucket を 1 行で `<label> <bar> <count> <pct>` の形に並べる。
-/// p95 が落ちる行は先頭に `▶` を置き、行全体に `app.theme.header_value`
-/// (color: White+BOLD / mono: BOLD) を適用する。
 /// 中段の高さに bucket が収まらない場合は末尾を `(+N more)` (DIM) に置換する。
-fn render_middle(f: &mut Frame<'_>, app: &App, view: &DetailView, area: Rect) {
+fn render_middle(f: &mut Frame<'_>, view: &DetailView, area: Rect) {
     match &view.histogram {
-        Some(h) => render_horizontal_bars(f, app, h, area),
+        Some(h) => render_horizontal_bars(f, h, area),
         None => {
             let p = Paragraph::new(Line::from(Span::styled(
                 "No histogram data",
@@ -521,7 +481,7 @@ const PCT_WIDTH: usize = 4;
 /// " " + label + " " + " " + count + " " + pct
 const FIXED_OVERHEAD: usize = 1 + LABEL_WIDTH + 1 + 1 + COUNT_WIDTH + 1 + PCT_WIDTH;
 
-fn render_horizontal_bars(f: &mut Frame<'_>, app: &App, h: &HistogramBars, area: Rect) {
+fn render_horizontal_bars(f: &mut Frame<'_>, h: &HistogramBars, area: Rect) {
     if area.height == 0 || area.width == 0 {
         return;
     }
@@ -540,20 +500,14 @@ fn render_horizontal_bars(f: &mut Frame<'_>, app: &App, h: &HistogramBars, area:
 
     for i in 0..bar_rows {
         let (label, value) = &h.bars[i];
-        let is_p95 = h.p95_bucket == Some(i);
-        let line = format_bar_line(label, *value, h.max, total, bar_width, is_p95);
-        let style = if is_p95 {
-            app.theme.header_value
-        } else {
-            Style::default()
-        };
+        let line = format_bar_line(label, *value, h.max, total, bar_width);
         let rect = Rect {
             x: area.x,
             y: area.y + i as u16,
             width: area.width,
             height: 1,
         };
-        f.render_widget(Paragraph::new(line).style(style), rect);
+        f.render_widget(Paragraph::new(line), rect);
     }
 
     if truncated && visible_rows > 0 {
@@ -574,16 +528,13 @@ fn render_horizontal_bars(f: &mut Frame<'_>, app: &App, h: &HistogramBars, area:
 
 /// 1 行ぶんの `Line` を組み立てる。
 /// 形: ` <label:LABEL_WIDTH> <bar> <count:COUNT_WIDTH> <pct:PCT_WIDTH>`
-/// `is_p95` のときは先頭の空白を `▶` に置換する (色なし端末でも識別可能)。
 fn format_bar_line<'a>(
     label: &str,
     value: u64,
     max: u64,
     total: u64,
     bar_width: usize,
-    is_p95: bool,
 ) -> Line<'a> {
-    let lead = if is_p95 { "▶" } else { " " };
     let bar = fill_bar(value, max, bar_width);
     let pct = if total == 0 {
         "0%".to_string()
@@ -592,8 +543,7 @@ fn format_bar_line<'a>(
         format!("{}%", p.round() as u64)
     };
     let text = format!(
-        "{lead}{label:<lw$} {bar} {value:>cw$} {pct:>pw$}",
-        lead = lead,
+        " {label:<lw$} {bar} {value:>cw$} {pct:>pw$}",
         label = label,
         lw = LABEL_WIDTH,
         bar = bar,
@@ -1054,92 +1004,7 @@ mod tests {
         let _ = draw(&app, 80, 24);
     }
 
-    // ---------- p95 bucket / horizontal bars ----------
-
-    #[test]
-    fn bars_have_p95_bucket_index_when_percentile_is_value() {
-        // prev=0, now=cumulative [20, 60, 100] over msecs [10, 50, 100]。
-        // 詳細は render_with_histogram_shows_p_labels_and_zone_title と同じ。
-        // p=0.95, target=95 → bucket 2 (msec=100) で線形補間 → Value(~93.75ms)。
-        // ceil(93.75)=94 → msecs[i] >= 94 を満たす最小 i は idx=2。
-        let prev = status_with_server_zones(
-            1000,
-            &[(
-                "z",
-                0,
-                0,
-                (0, 0, 0, 0, 0),
-                Some((vec![10, 50, 100], vec![0, 0, 0])),
-            )],
-        );
-        let now = status_with_server_zones(
-            2000,
-            &[(
-                "z",
-                100,
-                0,
-                (0, 100, 0, 0, 0),
-                Some((vec![10, 50, 100], vec![20, 60, 100])),
-            )],
-        );
-        let mut app = App::new();
-        app.on_fetch_ok(prev);
-        app.on_fetch_ok(now);
-        app.detail_zone = Some("z".into());
-
-        let v = build_detail(&app).expect("detail");
-        let h = v.histogram.expect("histogram present");
-        let idx = h.p95_bucket.expect("p95_bucket should be set");
-        // p95 値以上を満たす最小 bucket index = 2 (msec=100)。
-        assert_eq!(idx, 2, "p95 bucket should be the last bucket (>100)");
-    }
-
-    #[test]
-    fn bars_have_no_p95_bucket_when_no_prev() {
-        // 初 tick (prev 無し) は p95 = NoData なので p95_bucket は None。
-        let s = status_with_server_zones(
-            1000,
-            &[("z", 0, 0, (0, 0, 0, 0, 0), Some((vec![10, 50], vec![5, 7])))],
-        );
-        let mut app = App::new();
-        app.on_fetch_ok(s);
-        app.detail_zone = Some("z".into());
-
-        let v = build_detail(&app).expect("detail");
-        let h = v.histogram.expect("present");
-        assert_eq!(h.p95_bucket, None);
-    }
-
-    #[test]
-    fn find_p95_bucket_handles_overflow_and_average_and_nodata() {
-        let msecs = vec![10u64, 50, 100];
-        assert_eq!(
-            find_p95_bucket(PercentileResult::Overflow(100), &msecs),
-            Some(2),
-            "Overflow は最終 bucket を指す"
-        );
-        assert_eq!(
-            find_p95_bucket(PercentileResult::Average(20.0), &msecs),
-            None
-        );
-        assert_eq!(find_p95_bucket(PercentileResult::NoData, &msecs), None);
-        // 空 msecs は None
-        assert_eq!(
-            find_p95_bucket(PercentileResult::Value(10.0), &[]),
-            None,
-            "empty msecs"
-        );
-        // Value が全境界を超えるときも last を返す
-        assert_eq!(
-            find_p95_bucket(PercentileResult::Value(9999.0), &msecs),
-            Some(2)
-        );
-        // Value が最初の bucket 内 → idx=0
-        assert_eq!(
-            find_p95_bucket(PercentileResult::Value(5.0), &msecs),
-            Some(0)
-        );
-    }
+    // ---------- horizontal bars ----------
 
     #[test]
     fn render_middle_shows_horizontal_rows_with_counts_and_pct() {
@@ -1171,8 +1036,11 @@ mod tests {
         app.detail_zone = Some("z".into());
 
         let out = draw(&app, 80, 24);
-        // p95 が落ちる bucket の行に ▶ マーカーが付くこと
-        assert!(out.contains('▶'), "p95 marker (▶) missing:\n{out}");
+        // どの行にも ▶ マーカーは出ない (issue #147)
+        assert!(
+            !out.contains('▶'),
+            "▶ marker should not be rendered:\n{out}"
+        );
         // 横向きバーの行は label + count + pct を含む
         let lines: Vec<&str> = out.lines().collect();
         let row_le10 = lines.iter().find(|l| l.contains("<=10")).expect("<=10 row");
@@ -1192,11 +1060,6 @@ mod tests {
         assert!(
             row_gt100.contains("40%"),
             ">100 row should show 40%:\n{row_gt100}"
-        );
-        // 同じ行に ▶ と p95 bucket (>100) が乗っていること
-        assert!(
-            row_gt100.contains('▶'),
-            "▶ should be on the p95 row (>100):\n{row_gt100}"
         );
     }
 
