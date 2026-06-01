@@ -166,7 +166,7 @@ jobs:
           cargo install --locked cargo-generate-rpm@0.16.0
 
       - name: build 済みバイナリをダウンロード
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: vozltop-${{ matrix.target }}
           path: dist
@@ -238,7 +238,7 @@ jobs:
     needs: [build, packaging]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -270,7 +270,7 @@ jobs:
           cat SHA256SUMS
 
       - name: Release を発行
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           # tag push 起動時は GITHUB_REF から自動解決される。
           # workflow_dispatch のときは入力された tag を使う。

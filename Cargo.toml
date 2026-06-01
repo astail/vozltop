@@ -66,7 +66,7 @@ tokio = { version = "1", features = ["rt", "macros", "time", "signal", "net", "i
 # - `directories`: XDG ベースの config path 解決 (Linux/macOS/Windows 対応)。
 # keyring 連携は Phase 2 別 issue で検討。本 PR では password 平文許容
 # (chmod 0600 推奨を docstring に記載)。
-toml = { version = "0.8", default-features = false, features = ["parse"] }
+toml = { version = "1.1", default-features = false, features = ["parse", "serde"] }
 directories = "5"
 url = "2"
 
