@@ -5,9 +5,11 @@
 //!
 //! 1. **上段**: `p50 / p95 / p99` の数値。histogram 未設定 zone は
 //!    `Average request_msec only` の 1 行に置き換える。
-//! 2. **中段**: `BarChart` で 1 tick 分の bucket delta を可視化。
-//!    軸ラベルは `requestBuckets.msecs` から実行時に組み立てる (ハードコード禁止)。
-//!    histogram なし zone は `No histogram data` メッセージに置き換える。
+//! 2. **中段**: `BarChart` で 1 tick 分の bucket 別件数 (PDF) を可視化。
+//!    vts の `requestBuckets.counters` は累積 (CDF) で返るので、隣接 bucket 間の
+//!    差分を取って「その bucket レンジに入った件数」に変換してから描画する
+//!    (issue #134)。軸ラベルは `requestBuckets.msecs` から実行時に組み立てる
+//!    (ハードコード禁止)。histogram なし zone は `No histogram data` に置き換える。
 //! 3. **下段**: 各レスポンス分類のカウント (`1xx`〜`5xx` の累積値)。
 //!    cache zone は `hit / miss / bypass / expired / stale / updating / revalidated / scarce`。
 //!
@@ -298,9 +300,18 @@ fn percentiles_and_bars_request(
     (PercentileTriple { p50, p95, p99 }, Some(bars))
 }
 
-/// `now` の各 bucket と `prev` の同 bucket の差分を取り、bar の `(label, value)`
-/// を組み立てる。`prev` 不在 / shape mismatch のときは `now.counters` を
-/// そのまま使う (zero でなければ「形」だけは見える)。
+/// 1 tick ぶんの bucket 別件数 (PDF) を組み立てる (issue #134)。
+///
+/// vts の `requestBuckets.counters` は **累積 (CDF)** で「その閾値以下に入った
+/// リクエスト数」を返す。`prev` との時間方向差分を取っただけでは形は CDF の
+/// まま (e.g. 全件が最小バケットに収まると `<=5, <=10, <=50, ...` が全部同値で
+/// 並ぶ) で histogram として読めないため、隣接 bucket 間の差分も取り
+/// 「その bucket レンジに新たに入った件数」に変換する。これは Prometheus +
+/// Grafana の histogram 表示 (`rate(le[i+1]) - rate(le[i])`) と同じ慣習。
+///
+/// 失敗系のフォールバック:
+/// - `prev` 不在 / shape mismatch のときは `now.counters` を CDF とみなして
+///   そのまま PDF 化する (初 tick でも「形」だけは見えるよう)。
 fn bars_from_buckets(now: &Buckets, prev: Option<&Buckets>) -> HistogramBars {
     let len = now.msecs.len();
     let prev_counters: Option<&[u64]> = prev
@@ -308,14 +319,17 @@ fn bars_from_buckets(now: &Buckets, prev: Option<&Buckets>) -> HistogramBars {
         .map(|p| p.counters.as_slice());
 
     let mut bars: Vec<(String, u64)> = Vec::with_capacity(len);
+    let mut prev_cum = 0u64;
     for i in 0..len {
         let now_c = *now.counters.get(i).unwrap_or(&0);
-        let value = match prev_counters {
+        let cum_delta = match prev_counters {
             Some(pc) => now_c.saturating_sub(*pc.get(i).unwrap_or(&0)),
             None => now_c,
         };
+        let bin = cum_delta.saturating_sub(prev_cum);
+        prev_cum = cum_delta;
         let label = bucket_label(&now.msecs, i);
-        bars.push((label, value));
+        bars.push((label, bin));
     }
     let max = bars.iter().map(|(_, v)| *v).max().unwrap_or(0);
     HistogramBars { bars, max }
@@ -324,9 +338,9 @@ fn bars_from_buckets(now: &Buckets, prev: Option<&Buckets>) -> HistogramBars {
 /// `requestBuckets.msecs` から bucket の表示 label を組み立てる。
 ///
 /// 受け入れ条件「ハードコード禁止」。最終 bucket だけは `>` プレフィックスを
-/// 付けて「上限を超えた」扱いを明示する (= histogram 上は cumulative の最終値
-/// なので `<=` でも厳密には間違いではないが、表示意図として「最上位の bin」を
-/// 視認しやすくする)。
+/// 付けて「上限を超えた件数」扱いを明示する。`bars_from_buckets` は隣接 bucket
+/// 差分で PDF 化しているので、`<=N` は「直前 bucket 超〜N ms 以下に入った件数」、
+/// `>N` は「N ms を超えた件数」を意味する。
 fn bucket_label(msecs: &[u64], idx: usize) -> String {
     let last = msecs.len().saturating_sub(1);
     let ms = msecs.get(idx).copied().unwrap_or(0);
@@ -662,11 +676,13 @@ mod tests {
         assert_eq!(h.bars.len(), 5);
         assert_eq!(h.bars[0].0, "<=5");
         assert_eq!(h.bars[1].0, "<=10");
-        assert_eq!(h.bars[4].0, ">500"); // 最終 bucket は ">" プレフィックス
-                                         // delta 値が counter 通りに乗っていること
+        // 最終 bucket は ">" プレフィックス
+        assert_eq!(h.bars[4].0, ">500");
+        // PDF 化 (issue #134): vts は CDF を返すので隣接 bucket 差分を取った
+        // 値 ([10, 50-10, 100-50, 150-100, 200-150]) が bar value になる。
         let values: Vec<u64> = h.bars.iter().map(|(_, v)| *v).collect();
-        assert_eq!(values, vec![10, 50, 100, 150, 200]);
-        assert_eq!(h.max, 200);
+        assert_eq!(values, vec![10, 40, 50, 50, 50]);
+        assert_eq!(h.max, 50);
         // responses は累積で 2xx=100 が見える
         assert!(v.responses.contains(&("2xx", 100)));
     }
@@ -691,7 +707,8 @@ mod tests {
 
     #[test]
     fn server_with_histogram_but_no_prev_has_nodata_percentiles_but_renders_bars() {
-        // 初 tick: histogram の差分は不能 → p* は NoData。bars は累積値そのまま。
+        // 初 tick: histogram の差分は不能 → p* は NoData。bars は累積値を
+        // CDF とみなして PDF 化 ([5, 7-5] = [5, 2])。
         let s = status_with_server_zones(
             1000,
             &[("z", 0, 0, (0, 0, 0, 0, 0), Some((vec![10, 50], vec![5, 7])))],
@@ -703,11 +720,50 @@ mod tests {
         let v = build_detail(&app).expect("detail");
         assert!(matches!(v.percentiles.p50, PercentileResult::NoData));
         let h = v.histogram.expect("present");
-        // 累積値 (5, 7) がそのまま bar value になる
         assert_eq!(
             h.bars.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
-            vec![5, 7]
+            vec![5, 2]
         );
+    }
+
+    #[test]
+    fn histogram_pdf_only_first_bin_when_all_in_lowest_bucket() {
+        // issue #134 回帰: vts の CDF をそのまま並べると `<=5, <=10, <=50, ...`
+        // が全部同じ値で並ぶ (= histogram として読めない)。PDF 化されているなら
+        // 「全件 5ms 以下」の状況で最初の bar だけ立ち、残りは 0 になるはず。
+        let prev = status_with_server_zones(
+            1000,
+            &[(
+                "z",
+                0,
+                0,
+                (0, 0, 0, 0, 0),
+                Some((vec![5, 10, 50, 100, 500], vec![0, 0, 0, 0, 0])),
+            )],
+        );
+        let now = status_with_server_zones(
+            2000,
+            &[(
+                "z",
+                100,
+                0,
+                (0, 100, 0, 0, 0),
+                // CDF: 全 100 件が <=5ms に入ったので各境界も累積 100
+                Some((vec![5, 10, 50, 100, 500], vec![100, 100, 100, 100, 100])),
+            )],
+        );
+        let mut app = App::new();
+        app.on_fetch_ok(prev);
+        app.on_fetch_ok(now);
+        app.detail_zone = Some("z".into());
+
+        let h = build_detail(&app)
+            .expect("detail")
+            .histogram
+            .expect("histogram present");
+        let values: Vec<u64> = h.bars.iter().map(|(_, v)| *v).collect();
+        assert_eq!(values, vec![100, 0, 0, 0, 0]);
+        assert_eq!(h.max, 100);
     }
 
     #[test]
