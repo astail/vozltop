@@ -4,6 +4,8 @@
 [![Security audit](https://github.com/astail/vozltop/actions/workflows/audit.yml/badge.svg)](https://github.com/astail/vozltop/actions/workflows/audit.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+**日本語** | [English](README.en.md)
+
 `htop`-like real-time TUI for [vozlt/nginx-module-vts](https://github.com/vozlt/nginx-module-vts).
 
 ## なに？
@@ -12,10 +14,10 @@ nginx-module-vts は nginx の vhost / upstream / cache 単位のトラフィッ
 
 ```
 ┌─ vozltop ──────────────────────────────────────────────────────────────────┐
-│ Conn █████░░░░░░░░░░░░░░░ 42/120   active 42  reading 3  writing 5  waiting 34 │
-│ RPS  ▁▂▃▅▇▇▆▄▂▁                                                1284/s     │
-│ in   ▁▂▃▅▇▆▄▂▁                                              12.4 MB/s     │
-│ out  ▁▂▃▅▇▆▄▂▁                                              84.0 MB/s     │
+│ Conn █████░░░░░░░░░░░░░░░ 42/120  active 42 reading 3 writing 5 waiting 34 │
+│ RPS  ▁▂▃▅▇▇▆▄▂▁                                                1284/s      │
+│ in   ▁▂▃▅▇▆▄▂▁                                              12.4 MB/s      │
+│ out  ▁▂▃▅▇▆▄▂▁                                              84.0 MB/s      │
 ├────────────────────────────────────────────────────────────────────────────┤
 │ [Server] Upstream  Cache                                                   │
 ├────────────────────────────────────────────────────────────────────────────┤
@@ -109,7 +111,7 @@ vozltop https://nginx.example.com/status/format/json \
   --header 'Authorization: Bearer eyJ...'
 ```
 
-### Multi-host 監視 (issue #44)
+### Multi-host 監視
 
 複数の nginx-vts インスタンスを同時に監視できます。URL を 2 つ以上渡すと multi-host モードで起動し、上段に Host タブバーが出ます。
 
@@ -163,7 +165,7 @@ config 探索順:
 
 いずれも存在しない場合は config 無しで動作 (= v1 互換)。
 
-password は本 PR では config に平文で記載します。keyring 連携は Phase 2 別 issue で検討。`chmod 0600` で他ユーザから読めないようにすることを推奨します。
+password は config に平文で記載します。keyring 連携は Phase 2 で検討予定。`chmod 0600` で他ユーザから読めないようにすることを推奨します。
 
 ### Secrets を argv に露出しない
 
@@ -277,7 +279,7 @@ cargo run -- http://localhost:8080/status/format/json --interval 0.5
 
 ## セキュリティ
 
-脆弱性を発見した場合は public な issue ではなく、[GitHub Private Vulnerability Reporting](https://github.com/astail/vozltop/security/advisories/new) または `kiyomillefeuille@gmail.com` 宛にご連絡ください。詳細は [SECURITY.md](SECURITY.md) を参照してください。
+脆弱性を発見した場合は public な issue ではなく、[GitHub Private Vulnerability Reporting](https://github.com/astail/vozltop/security/advisories/new) からご連絡ください。詳細は [SECURITY.md](SECURITY.md) を参照してください。
 
 ## ライセンス
 
