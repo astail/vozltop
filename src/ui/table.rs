@@ -60,11 +60,12 @@ use std::cmp::Ordering;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table, TableState};
 use ratatui::Frame;
 
 use crate::model::{Responses, ServerZone, UpstreamServer, VtsStatus};
 use crate::state::{percentile, AlertConfig, App, PercentileResult, SortColumn, SortState, Tab};
+use crate::theme::Theme;
 use crate::ui::header::format_bps;
 
 /// 8 列ヘッダ。`ui::table::tests::*` から覗くことを想定して pub const にしてある。
@@ -944,7 +945,7 @@ pub fn any_row_alerting(app: &App) -> bool {
 
 // ---------- render ----------
 
-/// 現在の `active_tab` に応じて Server / Upstream / Cache を描画する。
+/// 現在の `active_tab` に応じて Server / Upstream / Cache を描画する (issue #150)。
 ///
 /// 副作用:
 /// - `app.visible_rows` を「表示行数」で更新 (cursor 上限算出用)。
@@ -958,20 +959,123 @@ pub fn render(f: &mut Frame<'_>, app: &App, area: Rect) {
     }
 }
 
+/// タブ名 (Tab → 表示ラベル) のマッピング (issue #150)。
+fn tab_label(tab: Tab) -> &'static str {
+    match tab {
+        Tab::Server => "Server Zones",
+        Tab::Upstream => "Upstream Servers",
+        Tab::Cache => "Cache Zones",
+        Tab::Filter => "Filter Zones",
+    }
+}
+
+/// タブごとの box title (`Tab名 · count [· filter "q"]`) を構築する (issue #150)。
+/// `total` はフィルタ適用前の総行数、`visible` は適用後。`filter` が空なら省略。
+fn build_box_title(tab: Tab, visible: usize, total: usize, filter: &str) -> String {
+    let name = tab_label(tab);
+    if filter.is_empty() {
+        format!(" {name} · {visible} ")
+    } else if visible == total {
+        format!(" {name} · {visible} · filter \"{filter}\" ")
+    } else {
+        format!(" {name} · {visible}/{total} · filter \"{filter}\" ")
+    }
+}
+
+/// アクティブソート列の見出しに `↓` / `↑` (mono: `v` / `^`) を suffix する。
+fn header_cell_with_sort<'a>(
+    label: &'a str,
+    col_index: u8,
+    sort: SortState,
+    theme: &Theme,
+) -> Cell<'a> {
+    if sort.column == col_index {
+        let arrow = if theme.mono {
+            if sort.descending {
+                "v"
+            } else {
+                "^"
+            }
+        } else if sort.descending {
+            "↓"
+        } else {
+            "↑"
+        };
+        Cell::from(format!("{label}{arrow}")).style(theme.table_header)
+    } else {
+        Cell::from(label).style(theme.table_header)
+    }
+}
+
+/// indicator 列 (2 cells) のセル。1 文字目 = カーソル、2 文字目 = アラート。
+/// mono mode は ASCII fallback (`>` / `!`)。
+fn indicator_cell<'a>(is_cursor: bool, is_alerting: bool, theme: &Theme) -> Cell<'a> {
+    let cursor_glyph = if theme.mono { ">" } else { "▶" };
+    let mut spans = Vec::with_capacity(2);
+    if is_cursor {
+        spans.push(Span::styled(cursor_glyph, theme.row_selected));
+    } else {
+        spans.push(Span::raw(" "));
+    }
+    if is_alerting {
+        spans.push(Span::styled("!", theme.alert));
+    } else {
+        spans.push(Span::raw(" "));
+    }
+    Cell::from(Line::from(spans))
+}
+
+/// table 全体を rounded box (mono: plain) で囲み、その内側 `Rect` を返す。
+/// 呼び出し側は inner に対して `render_stateful_widget` する。
+fn render_tab_box(f: &mut Frame<'_>, app: &App, area: Rect, title: String) -> Rect {
+    let border_type = if app.theme.mono {
+        BorderType::Plain
+    } else {
+        BorderType::Rounded
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(border_type)
+        .border_style(app.theme.border)
+        .title(Span::styled(title, app.theme.title));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    inner
+}
+
+/// 「データなし」プレースホルダ描画 (4 タブ共通)。box 込み。
+fn render_no_data(f: &mut Frame<'_>, app: &App, area: Rect, tab: Tab) {
+    let title = format!(" {} · (no data) ", tab_label(tab));
+    let inner = render_tab_box(f, app, area, title);
+    if inner.height == 0 {
+        return;
+    }
+    let p = Paragraph::new(Line::from(Span::styled(
+        "waiting for first VTS snapshot…",
+        Style::default().add_modifier(Modifier::DIM),
+    )));
+    f.render_widget(p, inner);
+    app.visible_rows.set(0);
+    app.page_size
+        .set(area.height.saturating_sub(3).max(1) as usize);
+}
+
+/// 数値を右寄せした文字列に整形する (cell の `Length` 幅に収まる範囲で)。
+fn right_aligned(s: &str, width: usize) -> String {
+    if s.chars().count() >= width {
+        s.to_string()
+    } else {
+        format!("{s:>width$}")
+    }
+}
+
 /// Server タブを `area` に描画する (旧 `render`)。
 fn render_server(f: &mut Frame<'_>, app: &App, area: Rect) {
     let latest = app.history.latest();
 
-    // Connecting 状態: snapshot がまだ無い → ヘッダだけ出してプレースホルダ。
+    // Connecting 状態: snapshot がまだ無い → box + プレースホルダ。
     let Some(now) = latest else {
-        let p = Paragraph::new(Line::from(Span::styled(
-            "waiting for first VTS snapshot…",
-            Style::default().add_modifier(Modifier::DIM),
-        )));
-        f.render_widget(p, area);
-        app.visible_rows.set(0);
-        app.page_size
-            .set(area.height.saturating_sub(1).max(1) as usize);
+        render_no_data(f, app, area, Tab::Server);
         return;
     };
 
@@ -983,39 +1087,77 @@ fn render_server(f: &mut Frame<'_>, app: &App, area: Rect) {
         }
         None => 0.0,
     };
-    let mut rows = build_server_rows(&now.status, prev.map(|p| &p.status), dt_secs);
+    let all_rows = build_server_rows(&now.status, prev.map(|p| &p.status), dt_secs);
+    let total = all_rows.len();
+    let mut rows = all_rows;
     retain_matching(&mut rows, &app.filter, |r| r.zone.as_str());
     sort_server_rows(&mut rows, app.sort);
 
-    let header =
-        Row::new(SERVER_HEADERS.iter().map(|h| Cell::from(*h))).style(app.theme.table_header);
+    let row_count = rows.len();
+    let title = build_box_title(Tab::Server, row_count, total, &app.filter);
+    let inner = render_tab_box(f, app, area, title);
+    if inner.height == 0 {
+        return;
+    }
+
+    let theme = &app.theme;
+    let header_row = Row::new(vec![
+        Cell::from(""),
+        header_cell_with_sort("ZONE", 0, app.sort, theme),
+        header_cell_with_sort("RPS", 1, app.sort, theme),
+        header_cell_with_sort("2xx%", 2, app.sort, theme),
+        header_cell_with_sort("4xx%", 3, app.sort, theme),
+        header_cell_with_sort("5xx%", 4, app.sort, theme),
+        header_cell_with_sort("p95", 5, app.sort, theme),
+        header_cell_with_sort("IN/s", 6, app.sort, theme),
+        header_cell_with_sort("OUT/s", 7, app.sort, theme),
+    ])
+    .style(theme.table_header.add_modifier(Modifier::UNDERLINED));
 
     let body_rows: Vec<Row> = rows
         .iter()
-        .map(|r| {
-            // アラート閾値超過 (issue #47) を最優先で強調し、次点で 5xx% 非ゼロ。
-            let row_style = if row_is_alerting(r.p95, &app.alerts) {
-                app.theme.alert
-            } else if r.r5xx_pct.is_some_and(|p| p > 0.0) {
-                app.theme.status_err
+        .enumerate()
+        .map(|(i, r)| {
+            let alerting = row_is_alerting(r.p95, &app.alerts);
+            let is_cursor = i == app.cursor;
+            let r5_style = if r.r5xx_pct.is_some_and(|p| p > 0.0) {
+                theme.status_err
+            } else {
+                Style::default()
+            };
+            let p95_style = if alerting {
+                theme.alert
             } else {
                 Style::default()
             };
             Row::new(vec![
+                indicator_cell(is_cursor, alerting, theme),
                 Cell::from(r.zone.clone()),
-                Cell::from(format_rps(r.rps)),
-                Cell::from(format_ratio(r.r2xx_pct)),
-                Cell::from(format_ratio(r.r4xx_pct)),
-                Cell::from(format_ratio(r.r5xx_pct)),
-                Cell::from(format_p95(r.p95)),
-                Cell::from(format_bps(r.bw_in_per_sec.round() as u64)),
-                Cell::from(format_bps(r.bw_out_per_sec.round() as u64)),
+                Cell::from(right_aligned(&format_rps(r.rps), 7)),
+                Cell::from(right_aligned(&format_ratio(r.r2xx_pct), 6)),
+                Cell::from(right_aligned(&format_ratio(r.r4xx_pct), 6)),
+                Cell::from(Span::styled(
+                    right_aligned(&format_ratio(r.r5xx_pct), 6),
+                    r5_style,
+                )),
+                Cell::from(Span::styled(
+                    right_aligned(&format_p95(r.p95), 7),
+                    p95_style,
+                )),
+                Cell::from(right_aligned(
+                    &format_bps(r.bw_in_per_sec.round() as u64),
+                    9,
+                )),
+                Cell::from(right_aligned(
+                    &format_bps(r.bw_out_per_sec.round() as u64),
+                    9,
+                )),
             ])
-            .style(row_style)
         })
         .collect();
 
     let widths = [
+        Constraint::Length(2),  // indicator (cursor ▶ + alert !)
         Constraint::Min(10),    // ZONE (可変)
         Constraint::Length(8),  // RPS
         Constraint::Length(7),  // 2xx%
@@ -1025,15 +1167,12 @@ fn render_server(f: &mut Frame<'_>, app: &App, area: Rect) {
         Constraint::Length(10), // IN/s
         Constraint::Length(10), // OUT/s
     ];
-    let row_count = body_rows.len();
 
     let table = Table::new(body_rows, widths)
-        .header(header)
-        .row_highlight_style(app.theme.row_selected);
+        .header(header_row)
+        .row_highlight_style(theme.row_selected);
 
-    // cursor を TableState に渡し、ratatui の組込みハイライト + 自動スクロールに任せる。
     let mut state = TableState::default();
-    // cursor が visible_rows を超えていたら row_count - 1 に詰める (resize / zone 消失対策)。
     let clamped = if row_count == 0 {
         None
     } else {
@@ -1041,13 +1180,12 @@ fn render_server(f: &mut Frame<'_>, app: &App, area: Rect) {
     };
     state.select(clamped);
 
-    f.render_stateful_widget(table, area, &mut state);
+    f.render_stateful_widget(table, inner, &mut state);
 
-    // cursor 範囲計算用の値を書き戻す (interior mutability)。
     app.visible_rows.set(row_count);
-    // 「ページ」= body 部の高さ。area.height からヘッダ 1 行を引く (最低 1)。
+    // 「ページ」= inner 部の高さからヘッダ 1 行を引く (最低 1)。
     app.page_size
-        .set(area.height.saturating_sub(1).max(1) as usize);
+        .set(inner.height.saturating_sub(1).max(1) as usize);
 }
 
 /// Upstream タブを `area` に描画する。
@@ -1059,14 +1197,7 @@ fn render_upstream(f: &mut Frame<'_>, app: &App, area: Rect) {
     let latest = app.history.latest();
 
     let Some(now) = latest else {
-        let p = Paragraph::new(Line::from(Span::styled(
-            "waiting for first VTS snapshot…",
-            Style::default().add_modifier(Modifier::DIM),
-        )));
-        f.render_widget(p, area);
-        app.visible_rows.set(0);
-        app.page_size
-            .set(area.height.saturating_sub(1).max(1) as usize);
+        render_no_data(f, app, area, Tab::Upstream);
         return;
     };
 
@@ -1078,52 +1209,89 @@ fn render_upstream(f: &mut Frame<'_>, app: &App, area: Rect) {
         }
         None => 0.0,
     };
-    let mut rows = build_upstream_rows(&now.status, prev.map(|p| &p.status), dt_secs);
+    let all_rows = build_upstream_rows(&now.status, prev.map(|p| &p.status), dt_secs);
+    let total = all_rows.len();
+    let mut rows = all_rows;
     retain_matching(&mut rows, &app.filter, |r| r.zone.as_str());
     sort_upstream_rows(&mut rows, app.sort);
 
-    let header =
-        Row::new(UPSTREAM_HEADERS.iter().map(|h| Cell::from(*h))).style(app.theme.table_header);
+    let row_count = rows.len();
+    let title = build_box_title(Tab::Upstream, row_count, total, &app.filter);
+    let inner = render_tab_box(f, app, area, title);
+    if inner.height == 0 {
+        return;
+    }
 
-    let mono = app.theme.mono;
+    let theme = &app.theme;
+    let mono = theme.mono;
+    let header_row = Row::new(vec![
+        Cell::from(""),
+        header_cell_with_sort("ZONE", 0, app.sort, theme),
+        header_cell_with_sort("RPS", 1, app.sort, theme),
+        header_cell_with_sort("2xx%", 2, app.sort, theme),
+        header_cell_with_sort("4xx%", 3, app.sort, theme),
+        header_cell_with_sort("5xx%", 4, app.sort, theme),
+        header_cell_with_sort("p95", 5, app.sort, theme),
+        header_cell_with_sort("IN/s", 6, app.sort, theme),
+        header_cell_with_sort("OUT/s", 7, app.sort, theme),
+        header_cell_with_sort("STATE", 8, app.sort, theme),
+    ])
+    .style(theme.table_header.add_modifier(Modifier::UNDERLINED));
+
     let body_rows: Vec<Row> = rows
         .iter()
-        .map(|r| {
-            // 行全体の強調: アラート閾値超過 (issue #47) を最優先、次点で 5xx%
-            // 非ゼロ。STATE 自体の強調は STATE セル単位で行う (down/backup の行の
-            // 他の列を赤一色にすると数値の読み取り性が落ちる)。
-            let row_style = if row_is_alerting(r.p95, &app.alerts) {
-                app.theme.alert
-            } else if r.r5xx_pct.is_some_and(|p| p > 0.0) {
-                app.theme.status_err
+        .enumerate()
+        .map(|(i, r)| {
+            let alerting = row_is_alerting(r.p95, &app.alerts);
+            let is_cursor = i == app.cursor;
+            let r5_style = if r.r5xx_pct.is_some_and(|p| p > 0.0) {
+                theme.status_err
+            } else {
+                Style::default()
+            };
+            let p95_style = if alerting {
+                theme.alert
             } else {
                 Style::default()
             };
             let state_style = match r.state {
-                UpstreamState::Down => app.theme.status_err,
-                UpstreamState::Backup => app.theme.status_warn,
+                UpstreamState::Down => theme.status_err,
+                UpstreamState::Backup => theme.status_warn,
                 UpstreamState::Up => Style::default(),
             };
             Row::new(vec![
+                indicator_cell(is_cursor, alerting, theme),
                 Cell::from(r.zone.clone()),
-                Cell::from(format_rps(r.rps)),
-                Cell::from(format_ratio(r.r2xx_pct)),
-                Cell::from(format_ratio(r.r4xx_pct)),
-                Cell::from(format_ratio(r.r5xx_pct)),
-                Cell::from(format_p95(r.p95)),
-                Cell::from(format_bps(r.bw_in_per_sec.round() as u64)),
-                Cell::from(format_bps(r.bw_out_per_sec.round() as u64)),
+                Cell::from(right_aligned(&format_rps(r.rps), 7)),
+                Cell::from(right_aligned(&format_ratio(r.r2xx_pct), 6)),
+                Cell::from(right_aligned(&format_ratio(r.r4xx_pct), 6)),
+                Cell::from(Span::styled(
+                    right_aligned(&format_ratio(r.r5xx_pct), 6),
+                    r5_style,
+                )),
+                Cell::from(Span::styled(
+                    right_aligned(&format_p95(r.p95), 7),
+                    p95_style,
+                )),
+                Cell::from(right_aligned(
+                    &format_bps(r.bw_in_per_sec.round() as u64),
+                    9,
+                )),
+                Cell::from(right_aligned(
+                    &format_bps(r.bw_out_per_sec.round() as u64),
+                    9,
+                )),
                 Cell::from(Span::styled(
                     format_upstream_state(r.state, mono),
                     state_style,
                 )),
             ])
-            .style(row_style)
         })
         .collect();
 
     let widths = [
-        Constraint::Min(10),    // ZONE (可変、"group/host:port" を表示)
+        Constraint::Length(2),  // indicator
+        Constraint::Min(10),    // ZONE
         Constraint::Length(8),  // RPS
         Constraint::Length(7),  // 2xx%
         Constraint::Length(7),  // 4xx%
@@ -1131,13 +1299,12 @@ fn render_upstream(f: &mut Frame<'_>, app: &App, area: Rect) {
         Constraint::Length(8),  // p95
         Constraint::Length(10), // IN/s
         Constraint::Length(10), // OUT/s
-        Constraint::Length(7),  // STATE ("backup" = 6 字 + 余白 1)
+        Constraint::Length(7),  // STATE
     ];
-    let row_count = body_rows.len();
 
     let table = Table::new(body_rows, widths)
-        .header(header)
-        .row_highlight_style(app.theme.row_selected);
+        .header(header_row)
+        .row_highlight_style(theme.row_selected);
 
     let mut state = TableState::default();
     let clamped = if row_count == 0 {
@@ -1147,11 +1314,11 @@ fn render_upstream(f: &mut Frame<'_>, app: &App, area: Rect) {
     };
     state.select(clamped);
 
-    f.render_stateful_widget(table, area, &mut state);
+    f.render_stateful_widget(table, inner, &mut state);
 
     app.visible_rows.set(row_count);
     app.page_size
-        .set(area.height.saturating_sub(1).max(1) as usize);
+        .set(inner.height.saturating_sub(1).max(1) as usize);
 }
 
 /// Cache タブを `area` に描画する。
@@ -1163,14 +1330,7 @@ fn render_cache(f: &mut Frame<'_>, app: &App, area: Rect) {
     let latest = app.history.latest();
 
     let Some(now) = latest else {
-        let p = Paragraph::new(Line::from(Span::styled(
-            "waiting for first VTS snapshot…",
-            Style::default().add_modifier(Modifier::DIM),
-        )));
-        f.render_widget(p, area);
-        app.visible_rows.set(0);
-        app.page_size
-            .set(area.height.saturating_sub(1).max(1) as usize);
+        render_no_data(f, app, area, Tab::Cache);
         return;
     };
 
@@ -1182,44 +1342,73 @@ fn render_cache(f: &mut Frame<'_>, app: &App, area: Rect) {
         }
         None => 0.0,
     };
-    let mut rows = build_cache_rows(&now.status, prev.map(|p| &p.status), dt_secs);
+    let all_rows = build_cache_rows(&now.status, prev.map(|p| &p.status), dt_secs);
+    let total = all_rows.len();
+    let mut rows = all_rows;
     retain_matching(&mut rows, &app.filter, |r| r.zone.as_str());
     sort_cache_rows(&mut rows, app.sort);
 
-    let header =
-        Row::new(CACHE_HEADERS.iter().map(|h| Cell::from(*h))).style(app.theme.table_header);
+    let row_count = rows.len();
+    let title = build_box_title(Tab::Cache, row_count, total, &app.filter);
+    let inner = render_tab_box(f, app, area, title);
+    if inner.height == 0 {
+        return;
+    }
+
+    let theme = &app.theme;
+    let header_row = Row::new(vec![
+        Cell::from(""),
+        header_cell_with_sort("ZONE", 0, app.sort, theme),
+        header_cell_with_sort("HIT%", 1, app.sort, theme),
+        header_cell_with_sort("MISS", 2, app.sort, theme),
+        header_cell_with_sort("EXPIRED", 3, app.sort, theme),
+        header_cell_with_sort("STALE", 4, app.sort, theme),
+        header_cell_with_sort("USED", 5, app.sort, theme),
+        header_cell_with_sort("IN/s", 6, app.sort, theme),
+        header_cell_with_sort("OUT/s", 7, app.sort, theme),
+    ])
+    .style(theme.table_header.add_modifier(Modifier::UNDERLINED));
 
     let body_rows: Vec<Row> = rows
         .iter()
-        .map(|r| {
+        .enumerate()
+        .map(|(i, r)| {
+            let is_cursor = i == app.cursor;
             Row::new(vec![
+                indicator_cell(is_cursor, false, theme),
                 Cell::from(r.zone.clone()),
-                Cell::from(format_ratio(r.hit_pct)),
-                Cell::from(r.miss.to_string()),
-                Cell::from(r.expired.to_string()),
-                Cell::from(r.stale.to_string()),
+                Cell::from(right_aligned(&format_ratio(r.hit_pct), 6)),
+                Cell::from(right_aligned(&r.miss.to_string(), 8)),
+                Cell::from(right_aligned(&r.expired.to_string(), 8)),
+                Cell::from(right_aligned(&r.stale.to_string(), 7)),
                 Cell::from(format_used(r.used_size, r.max_size)),
-                Cell::from(format_bps(r.bw_in_per_sec.round() as u64)),
-                Cell::from(format_bps(r.bw_out_per_sec.round() as u64)),
+                Cell::from(right_aligned(
+                    &format_bps(r.bw_in_per_sec.round() as u64),
+                    9,
+                )),
+                Cell::from(right_aligned(
+                    &format_bps(r.bw_out_per_sec.round() as u64),
+                    9,
+                )),
             ])
         })
         .collect();
 
     let widths = [
-        Constraint::Min(10),    // ZONE (可変)
+        Constraint::Length(2),  // indicator
+        Constraint::Min(10),    // ZONE
         Constraint::Length(7),  // HIT%
         Constraint::Length(9),  // MISS
         Constraint::Length(9),  // EXPIRED
         Constraint::Length(8),  // STALE
-        Constraint::Length(22), // USED ("1.2 GB / 4.0 GB (30%)")
+        Constraint::Length(22), // USED
         Constraint::Length(10), // IN/s
         Constraint::Length(10), // OUT/s
     ];
-    let row_count = body_rows.len();
 
     let table = Table::new(body_rows, widths)
-        .header(header)
-        .row_highlight_style(app.theme.row_selected);
+        .header(header_row)
+        .row_highlight_style(theme.row_selected);
 
     let mut state = TableState::default();
     let clamped = if row_count == 0 {
@@ -1229,11 +1418,11 @@ fn render_cache(f: &mut Frame<'_>, app: &App, area: Rect) {
     };
     state.select(clamped);
 
-    f.render_stateful_widget(table, area, &mut state);
+    f.render_stateful_widget(table, inner, &mut state);
 
     app.visible_rows.set(row_count);
     app.page_size
-        .set(area.height.saturating_sub(1).max(1) as usize);
+        .set(inner.height.saturating_sub(1).max(1) as usize);
 }
 
 /// Filter タブを `area` に描画する。
@@ -1244,14 +1433,7 @@ fn render_filter(f: &mut Frame<'_>, app: &App, area: Rect) {
     let latest = app.history.latest();
 
     let Some(now) = latest else {
-        let p = Paragraph::new(Line::from(Span::styled(
-            "waiting for first VTS snapshot…",
-            Style::default().add_modifier(Modifier::DIM),
-        )));
-        f.render_widget(p, area);
-        app.visible_rows.set(0);
-        app.page_size
-            .set(area.height.saturating_sub(1).max(1) as usize);
+        render_no_data(f, app, area, Tab::Filter);
         return;
     };
 
@@ -1263,54 +1445,90 @@ fn render_filter(f: &mut Frame<'_>, app: &App, area: Rect) {
         }
         None => 0.0,
     };
-    let mut rows = build_filter_rows(&now.status, prev.map(|p| &p.status), dt_secs);
+    let all_rows = build_filter_rows(&now.status, prev.map(|p| &p.status), dt_secs);
+    let total = all_rows.len();
+    let mut rows = all_rows;
     retain_matching(&mut rows, &app.filter, |r| r.zone.as_str());
     sort_filter_rows(&mut rows, app.sort);
 
-    let header =
-        Row::new(FILTER_HEADERS.iter().map(|h| Cell::from(*h))).style(app.theme.table_header);
+    let row_count = rows.len();
+    let title = build_box_title(Tab::Filter, row_count, total, &app.filter);
+    let inner = render_tab_box(f, app, area, title);
+    if inner.height == 0 {
+        return;
+    }
+
+    let theme = &app.theme;
+    let header_row = Row::new(vec![
+        Cell::from(""),
+        header_cell_with_sort("ZONE", 0, app.sort, theme),
+        header_cell_with_sort("RPS", 1, app.sort, theme),
+        header_cell_with_sort("2xx%", 2, app.sort, theme),
+        header_cell_with_sort("4xx%", 3, app.sort, theme),
+        header_cell_with_sort("5xx%", 4, app.sort, theme),
+        header_cell_with_sort("p95", 5, app.sort, theme),
+        header_cell_with_sort("IN/s", 6, app.sort, theme),
+        header_cell_with_sort("OUT/s", 7, app.sort, theme),
+    ])
+    .style(theme.table_header.add_modifier(Modifier::UNDERLINED));
 
     let body_rows: Vec<Row> = rows
         .iter()
-        .map(|r| {
-            // アラート閾値超過 (issue #47) を最優先で強調し、次点で 5xx% 非ゼロ。
-            // 列構成が Server と同形なので Server タブと同じ規約で判定する。
-            let row_style = if row_is_alerting(r.p95, &app.alerts) {
-                app.theme.alert
-            } else if r.r5xx_pct.is_some_and(|p| p > 0.0) {
-                app.theme.status_err
+        .enumerate()
+        .map(|(i, r)| {
+            let alerting = row_is_alerting(r.p95, &app.alerts);
+            let is_cursor = i == app.cursor;
+            let r5_style = if r.r5xx_pct.is_some_and(|p| p > 0.0) {
+                theme.status_err
+            } else {
+                Style::default()
+            };
+            let p95_style = if alerting {
+                theme.alert
             } else {
                 Style::default()
             };
             Row::new(vec![
+                indicator_cell(is_cursor, alerting, theme),
                 Cell::from(r.zone.clone()),
-                Cell::from(format_rps(r.rps)),
-                Cell::from(format_ratio(r.r2xx_pct)),
-                Cell::from(format_ratio(r.r4xx_pct)),
-                Cell::from(format_ratio(r.r5xx_pct)),
-                Cell::from(format_p95(r.p95)),
-                Cell::from(format_bps(r.bw_in_per_sec.round() as u64)),
-                Cell::from(format_bps(r.bw_out_per_sec.round() as u64)),
+                Cell::from(right_aligned(&format_rps(r.rps), 7)),
+                Cell::from(right_aligned(&format_ratio(r.r2xx_pct), 6)),
+                Cell::from(right_aligned(&format_ratio(r.r4xx_pct), 6)),
+                Cell::from(Span::styled(
+                    right_aligned(&format_ratio(r.r5xx_pct), 6),
+                    r5_style,
+                )),
+                Cell::from(Span::styled(
+                    right_aligned(&format_p95(r.p95), 7),
+                    p95_style,
+                )),
+                Cell::from(right_aligned(
+                    &format_bps(r.bw_in_per_sec.round() as u64),
+                    9,
+                )),
+                Cell::from(right_aligned(
+                    &format_bps(r.bw_out_per_sec.round() as u64),
+                    9,
+                )),
             ])
-            .style(row_style)
         })
         .collect();
 
     let widths = [
-        Constraint::Min(10),    // ZONE (可変、"group/key" を表示)
-        Constraint::Length(8),  // RPS
-        Constraint::Length(7),  // 2xx%
-        Constraint::Length(7),  // 4xx%
-        Constraint::Length(7),  // 5xx%
-        Constraint::Length(8),  // p95
-        Constraint::Length(10), // IN/s
-        Constraint::Length(10), // OUT/s
+        Constraint::Length(2),
+        Constraint::Min(10),
+        Constraint::Length(8),
+        Constraint::Length(7),
+        Constraint::Length(7),
+        Constraint::Length(7),
+        Constraint::Length(8),
+        Constraint::Length(10),
+        Constraint::Length(10),
     ];
-    let row_count = body_rows.len();
 
     let table = Table::new(body_rows, widths)
-        .header(header)
-        .row_highlight_style(app.theme.row_selected);
+        .header(header_row)
+        .row_highlight_style(theme.row_selected);
 
     let mut state = TableState::default();
     let clamped = if row_count == 0 {
@@ -1320,11 +1538,11 @@ fn render_filter(f: &mut Frame<'_>, app: &App, area: Rect) {
     };
     state.select(clamped);
 
-    f.render_stateful_widget(table, area, &mut state);
+    f.render_stateful_widget(table, inner, &mut state);
 
     app.visible_rows.set(row_count);
     app.page_size
-        .set(area.height.saturating_sub(1).max(1) as usize);
+        .set(inner.height.saturating_sub(1).max(1) as usize);
 }
 
 #[cfg(test)]
@@ -1878,10 +2096,11 @@ mod tests {
                 ("c", 0, 0, 0, 0, (0, 0, 0, 0, 0), None),
             ],
         ));
-        let _ = draw(&app, 80, 7); // 1 row header + 3 body + 余白
+        let _ = draw(&app, 80, 7);
         assert_eq!(app.visible_rows.get(), 3);
-        // body height = area.height - 1 = 6
-        assert_eq!(app.page_size.get(), 6);
+        // issue #150: box border 2 + 列見出し 1 が引かれる → page_size = area - 3。
+        // area=7 → inner.height=5 (border 2)、page_size = 5 - 1 (header) = 4。
+        assert_eq!(app.page_size.get(), 4);
     }
 
     #[test]
@@ -2362,7 +2581,9 @@ mod tests {
                 ),
             ],
         ));
-        let out = draw_upstream(&mut app, 100, 6);
+        // issue #150 で indicator 列が追加されたため、ZONE 列の有効幅が狭まる。
+        // ZONE 名が truncate されないだけの余裕を持たせて 130 桁で描画する。
+        let out = draw_upstream(&mut app, 130, 6);
         for h in &UPSTREAM_HEADERS {
             assert!(out.contains(h), "header {h} missing in:\n{out}");
         }

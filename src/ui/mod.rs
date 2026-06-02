@@ -88,13 +88,11 @@ pub fn render(f: &mut Frame<'_>, app: &App) {
 /// 再利用できる。
 pub(crate) fn render_in(f: &mut Frame<'_>, app: &App, area: Rect) {
     let banner_msg = app.error_banner_display();
-    let show_status_banner = header::show_status_banner(app);
 
-    // 上から: status banner? → header(3) → body(fill) → error_banner? → footer(1)
-    let mut constraints: Vec<Constraint> = Vec::with_capacity(5);
-    if show_status_banner {
-        constraints.push(Constraint::Length(1));
-    }
+    // 上から: header(7) → body(fill) → error_banner? → footer(1)
+    // issue #150: 旧 status banner 行 (Stale / Disc) はヘッダタイトルの ●
+    // ドット + ラベルに統合したため、ここでは行を確保しない。
+    let mut constraints: Vec<Constraint> = Vec::with_capacity(4);
     constraints.push(Constraint::Length(header::HEADER_HEIGHT));
     constraints.push(Constraint::Fill(1));
     if banner_msg.is_some() {
@@ -105,22 +103,14 @@ pub(crate) fn render_in(f: &mut Frame<'_>, app: &App, area: Rect) {
     let rows = Layout::vertical(constraints).split(area);
 
     let mut idx = 0usize;
-    if show_status_banner {
-        header::render_status_banner(f, app, rows[idx]);
-        idx += 1;
-    }
     header::render(f, app, rows[idx]);
     idx += 1;
-    // body 部は active_tab に応じて Server / Upstream / Cache を描画。
-    // Server は #28 で実装、Upstream は #29、Cache は #30 で埋まる。
     table::render(f, app, rows[idx]);
     idx += 1;
     if let Some(msg) = banner_msg.as_deref() {
         f.render_widget(banner_widget(msg, app), rows[idx]);
         idx += 1;
     }
-    // 旧 footer_widget() は issue #33 で footer::render に置き換え。
-    // App::sort / App::filter を読むため引数化が必要。
     footer::render(f, app, rows[idx]);
 
     // detail overlay (#32): detail_zone が Some のとき中央に重ねる。
@@ -171,36 +161,18 @@ mod tests {
     }
 
     #[test]
-    fn renders_4_row_header_with_conn_rps_bw_labels() {
+    fn renders_7_row_rounded_header_with_conn_rps_bw_labels() {
         let app = App::new();
-        let out = draw_to_string(&app, 80, 8);
-        // 行 1: Conn ラベル
+        let out = draw_to_string(&app, 80, 14);
+        // ヘッダ (Conn / RPS / IN / OUT)
         assert!(out.contains("Conn"), "out:\n{out}");
-        // 行 2: RPS ラベル
         assert!(out.contains("RPS"), "out:\n{out}");
-        // 行 3 / 4: BW 系 (in, out ラベル) + 0 B/s プレースホルダ (両行)
-        assert!(out.contains("in"), "out:\n{out}");
-        assert!(out.contains("out"), "out:\n{out}");
-        assert!(out.contains("0 B/s"), "out:\n{out}");
-        // body プレースホルダ
-        assert!(
-            out.contains("waiting for first VTS snapshot"),
-            "out:\n{out}"
-        );
-        // footer (#33: F1Help + Sort 表示)
+        assert!(out.contains("IN"), "out:\n{out}");
+        assert!(out.contains("OUT"), "out:\n{out}");
+        // 内部 divider
+        assert!(out.contains('┄'), "divider should use ┄; out:\n{out}");
+        // footer key hints (#150 で footer は key hint のみに縮約)
         assert!(out.contains("F1Help"), "footer missing F1Help:\n{out}");
-        assert!(out.contains("Sort:"), "footer missing Sort:\n{out}");
-    }
-
-    #[test]
-    fn footer_renders_filter_when_set() {
-        let mut app = App::new();
-        app.filter = "api".to_string();
-        let out = draw_to_string(&app, 100, 8);
-        assert!(
-            out.contains("Filter: api"),
-            "footer should render filter:\n{out}"
-        );
     }
 
     #[test]
@@ -229,36 +201,37 @@ mod tests {
     }
 
     #[test]
-    fn stale_status_inserts_pre_header_banner() {
+    fn stale_status_appears_in_header_title() {
+        // issue #150: 旧 pre-header status banner はヘッダタイトル (●ドット +
+        // "Stale (N)" ラベル) に統合された。
         let mut app = App::new();
         app.status = AppStatus::Stale {
             last_ok: std::time::Instant::now(),
             failures: 2,
         };
-        let out = draw_to_string(&app, 80, 8);
-        // status banner にラベルが出る
+        let out = draw_to_string(&app, 80, 14);
         assert!(out.contains("Stale"), "out:\n{out}");
-        assert!(out.contains("failures: 2"), "out:\n{out}");
-        // ヘッダの 3 行も併存している
+        assert!(out.contains("(2)"), "failure count in title; out:\n{out}");
+        // ヘッダ本体も併存
         assert!(out.contains("Conn"), "out:\n{out}");
         assert!(out.contains("RPS"), "out:\n{out}");
     }
 
     #[test]
-    fn disconnected_status_inserts_pre_header_banner() {
+    fn disconnected_status_appears_in_header_title() {
         let mut app = App::new();
         app.status = AppStatus::Disconnected { failures: 5 };
-        let out = draw_to_string(&app, 80, 8);
+        let out = draw_to_string(&app, 80, 14);
         assert!(out.contains("Disconnected"), "out:\n{out}");
-        assert!(out.contains("failures: 5"), "out:\n{out}");
+        assert!(out.contains("(5)"), "out:\n{out}");
     }
 
     #[test]
-    fn running_state_does_not_show_status_banner() {
+    fn running_state_does_not_show_legacy_status_banner_strings() {
         let mut app = App::new();
         app.status = AppStatus::Running;
-        let out = draw_to_string(&app, 80, 7);
-        // banner 部分の文字列は出てこない
+        let out = draw_to_string(&app, 80, 14);
+        // 旧 banner の文字列は出てこない
         assert!(!out.contains("[Stale]"), "out:\n{out}");
         assert!(!out.contains("[Disconnected]"), "out:\n{out}");
         // ヘッダはそのまま表示
@@ -269,7 +242,7 @@ mod tests {
     fn error_banner_is_rendered_when_present() {
         let mut app = App::new();
         app.error_banner = Some("HTTP 500 Internal Server Error".to_string());
-        let out = draw_to_string(&app, 80, 8);
+        let out = draw_to_string(&app, 80, 14);
         assert!(out.contains("HTTP 500"), "out:\n{out}");
     }
 
@@ -277,15 +250,15 @@ mod tests {
     fn error_banner_has_bang_prefix_in_mono_theme() {
         let mut app = App::with_theme(Theme::mono());
         app.error_banner = Some("HTTP 500 Internal Server Error".to_string());
-        let out = draw_to_string(&app, 80, 8);
+        let out = draw_to_string(&app, 80, 14);
         assert!(out.contains("[!] HTTP 500"), "out:\n{out}");
     }
 
     #[test]
     fn renders_without_banner_when_no_error() {
         let app = App::new();
-        let out = draw_to_string(&app, 80, 8);
-        // 通常時はヘッダの 3 行 + body + footer
+        let out = draw_to_string(&app, 80, 14);
+        // 通常時はヘッダの 5 行 + body + footer
         assert!(out.contains("Conn"), "out:\n{out}");
         // footer 由来の F1 hint
         assert!(out.contains("F1Help"), "out:\n{out}");

@@ -52,6 +52,12 @@ pub struct Theme {
     pub footer: Style,
     /// 区切り線 / 装飾。
     pub separator: Style,
+    /// rounded box (header / table) の枠線 (issue #150)。
+    pub border: Style,
+    /// RPS / IN / OUT 横バーの塗り部 `█▉▊▋▌▍▎▏` (issue #150)。
+    pub bar_filled: Style,
+    /// 同じ横バーの空き部 `░` (issue #150)。
+    pub bar_empty: Style,
     /// 本テーマが mono かどうか。`error_banner_prefix` などの分岐に使う。
     pub mono: bool,
 }
@@ -77,6 +83,9 @@ impl Theme {
             restart_banner: Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             footer: Style::new().fg(Color::DarkGray),
             separator: Style::new().fg(Color::DarkGray),
+            border: Style::new().fg(Color::DarkGray),
+            bar_filled: Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            bar_empty: Style::new().fg(Color::DarkGray),
             mono: false,
         }
     }
@@ -101,6 +110,9 @@ impl Theme {
             restart_banner: Style::new().add_modifier(Modifier::BOLD),
             footer: Style::new().add_modifier(Modifier::DIM),
             separator: Style::new().add_modifier(Modifier::DIM),
+            border: Style::new().add_modifier(Modifier::DIM),
+            bar_filled: Style::new().add_modifier(Modifier::BOLD),
+            bar_empty: Style::new().add_modifier(Modifier::DIM),
             mono: true,
         }
     }
@@ -220,6 +232,9 @@ mod tests {
             t.restart_banner,
             t.footer,
             t.separator,
+            t.border,
+            t.bar_filled,
+            t.bar_empty,
         ] {
             assert_eq!(style.fg, None, "mono theme must not set fg: {style:?}");
             assert_eq!(style.bg, None, "mono theme must not set bg: {style:?}");
@@ -276,6 +291,9 @@ mod tests {
             ("restart_banner", t.restart_banner),
             ("footer", t.footer),
             ("separator", t.separator),
+            ("border", t.border),
+            ("bar_filled", t.bar_filled),
+            ("bar_empty", t.bar_empty),
         ] {
             if let Some(c) = style.fg {
                 assert!(is_ansi16(c), "{name}.fg uses non-ANSI16 color: {c:?}");
@@ -344,6 +362,39 @@ mod tests {
         let _guard = ScopedEnv::set("NO_COLOR", "1");
         let t = Theme::from_args(&args_with(false));
         assert!(t.mono);
+    }
+
+    // ---------- issue #150: rounded box + bar ----------
+
+    #[test]
+    fn color_border_is_darkgray() {
+        let t = Theme::color();
+        assert_eq!(t.border.fg, Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn color_bar_filled_has_cyan_accent() {
+        let t = Theme::color();
+        assert_eq!(t.bar_filled.fg, Some(Color::Cyan));
+        assert!(t.bar_filled.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn color_bar_empty_is_darkgray() {
+        let t = Theme::color();
+        assert_eq!(t.bar_empty.fg, Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn mono_border_uses_dim() {
+        let t = Theme::mono();
+        assert!(t.border.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn mono_bar_filled_uses_bold() {
+        let t = Theme::mono();
+        assert!(t.bar_filled.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
