@@ -43,7 +43,11 @@ const EIGHTHS: [char; 7] = ['▏', '▎', '▍', '▌', '▋', '▊', '▉'];
 
 /// area を 1 つの rounded box で囲み、その内側に 5 行 (Conn / divider / RPS / IN / OUT)
 /// を描画する。
-pub fn render(f: &mut Frame<'_>, app: &App, area: Rect) {
+///
+/// `suppress_host_in_title` が `true` のとき、タイトル行から host 名を省く
+/// (Workspace multi-host モードでは host 名が上段の host タブバーに既出のため、
+/// 二重表示を避ける目的)。単一 host モードでは `false` を渡す。
+pub fn render(f: &mut Frame<'_>, app: &App, area: Rect, suppress_host_in_title: bool) {
     if area.height < HEADER_HEIGHT || area.width < 4 {
         // 安全側: 極端な resize で何も描かない。panic はしない。
         return;
@@ -54,7 +58,7 @@ pub fn render(f: &mut Frame<'_>, app: &App, area: Rect) {
     } else {
         BorderType::Rounded
     };
-    let title_line = build_title_line(app);
+    let title_line = build_title_line(app, suppress_host_in_title);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(border_type)
@@ -135,7 +139,10 @@ pub fn render(f: &mut Frame<'_>, app: &App, area: Rect) {
 /// - Connecting: `● Connecting`
 /// - Stale: `● Stale (3) · api.prod · up 3d 14h`
 /// - Disconnected: `● Disconnected (5) · api.prod · up 3d 14h`
-fn build_title_line(app: &App) -> Line<'static> {
+///
+/// `suppress_host` が `true` のとき host 名は出力しない (Workspace multi-host
+/// モードで host タブバーと重複させないため)。
+fn build_title_line(app: &App, suppress_host: bool) -> Line<'static> {
     let (dot_style, status_label): (Style, Option<String>) = match &app.status {
         AppStatus::Connecting => (app.theme.status_warn, Some("Connecting".to_string())),
         AppStatus::Running => (app.theme.status_ok, None),
@@ -163,7 +170,7 @@ fn build_title_line(app: &App) -> Line<'static> {
         spans.push(Span::raw(" "));
         spans.push(Span::styled(label, app.theme.title));
     }
-    if !host.is_empty() {
+    if !suppress_host && !host.is_empty() {
         spans.push(Span::raw(" · "));
         spans.push(Span::styled(host, app.theme.title));
     }
@@ -448,12 +455,16 @@ mod tests {
     }
 
     fn draw(app: &App, w: u16, h: u16) -> String {
+        draw_with(app, w, h, false)
+    }
+
+    fn draw_with(app: &App, w: u16, h: u16, suppress_host: bool) -> String {
         let backend = TestBackend::new(w, h);
         let mut terminal = Terminal::new(backend).expect("term");
         terminal
             .draw(|f| {
                 let area = f.area();
-                render(f, app, area);
+                render(f, app, area, suppress_host);
             })
             .expect("draw");
         let buf = terminal.backend().buffer().clone();
@@ -686,8 +697,32 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                render(f, &app, area);
+                render(f, &app, area, false);
             })
             .expect("draw");
+    }
+
+    #[test]
+    fn multi_host_workspace_suppresses_host_in_title() {
+        // issue #150 受入条件: Workspace multi-host モードではタイトル host 名が
+        // 省略される (host タブバーと二重表示しないため)。
+        // snapshot_with_conns は host_name="host1" を仕込むので、その文字列で判定する。
+        let mut app = App::new();
+        app.history.push(snapshot_with_conns(1000, 1, 0, 1, 0));
+
+        let with_host = draw_with(&app, 80, HEADER_HEIGHT, false);
+        assert!(
+            with_host.contains("host1"),
+            "single-host mode should include host name in title:\n{with_host}"
+        );
+
+        let without_host = draw_with(&app, 80, HEADER_HEIGHT, true);
+        assert!(
+            !without_host.contains("host1"),
+            "multi-host mode should suppress host name in title:\n{without_host}"
+        );
+        // ● ドット + Conn 行などその他のヘッダ要素は残る
+        assert!(without_host.contains('●'), "out:\n{without_host}");
+        assert!(without_host.contains("Conn"), "out:\n{without_host}");
     }
 }

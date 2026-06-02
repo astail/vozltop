@@ -72,7 +72,9 @@ pub fn render_workspace(f: &mut Frame<'_>, ws: &Workspace) {
     ])
     .areas(area);
     host_tab::render(f, ws, host_bar);
-    render_in(f, ws.active(), body);
+    // multi-host モードでは host 名が host タブバーに既出のため、ヘッダ
+    // タイトルからは省略する (issue #150 受入条件)。
+    render_in(f, ws.active(), body, true);
 }
 
 /// app の状態に応じて画面全体を再描画する。
@@ -80,13 +82,16 @@ pub fn render_workspace(f: &mut Frame<'_>, ws: &Workspace) {
 /// 副作用は `f` への widget render 呼び出しのみ。I/O を伴わないので
 /// `TestBackend` ベースの単体テストで挙動を固定できる。
 pub fn render(f: &mut Frame<'_>, app: &App) {
-    render_in(f, app, f.area());
+    render_in(f, app, f.area(), false);
 }
 
 /// [`render`] の実装本体。area を引数で受けるため、host タブバーぶんの行を
 /// 削った領域に描画したい multi-host 経路 ([`render_workspace`]) からも
 /// 再利用できる。
-pub(crate) fn render_in(f: &mut Frame<'_>, app: &App, area: Rect) {
+///
+/// `suppress_host_in_title` はヘッダタイトルから host 名を省くかどうか。
+/// multi-host 経路では `true`、単一 host の [`render`] 経路では `false`。
+pub(crate) fn render_in(f: &mut Frame<'_>, app: &App, area: Rect, suppress_host_in_title: bool) {
     let banner_msg = app.error_banner_display();
 
     // 上から: header(7) → body(fill) → error_banner? → footer(1)
@@ -103,7 +108,7 @@ pub(crate) fn render_in(f: &mut Frame<'_>, app: &App, area: Rect) {
     let rows = Layout::vertical(constraints).split(area);
 
     let mut idx = 0usize;
-    header::render(f, app, rows[idx]);
+    header::render(f, app, rows[idx], suppress_host_in_title);
     idx += 1;
     table::render(f, app, rows[idx]);
     idx += 1;

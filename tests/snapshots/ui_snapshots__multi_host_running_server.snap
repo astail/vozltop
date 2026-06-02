@@ -3,7 +3,7 @@ source: tests/ui_snapshots.rs
 expression: render_workspace_to_string(&ws)
 ---
 "HOST  [web-prod-1]  web-prod-2  edge-tokyo                                      "
-"╭ ● · be32e97af5b7 · up 0m 42s ────────────────────────────────────────────────╮"
+"╭ ● · up 0m 42s ───────────────────────────────────────────────────────────────╮"
 "│ Conn   active 1  reading 0  writing 1  waiting 0                             │"
 "│┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄│"
 "│ RPS ██████████████████████████████████████ 510/s       │  req  8.5 K         │"
