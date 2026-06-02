@@ -1007,22 +1007,16 @@ fn header_cell_with_sort<'a>(
     }
 }
 
-/// indicator 列 (2 cells) のセル。1 文字目 = カーソル、2 文字目 = アラート。
-/// mono mode は ASCII fallback (`>` / `!`)。
-fn indicator_cell<'a>(is_cursor: bool, is_alerting: bool, theme: &Theme) -> Cell<'a> {
-    let cursor_glyph = if theme.mono { ">" } else { "▶" };
-    let mut spans = Vec::with_capacity(2);
+/// indicator 列 (1 cell) のセル。カーソル行に `▶` (mono: `>`) を出す。
+/// アラートは p95 列の `theme.alert` 着色で表現するため、ここでは glyph を出さない
+/// (80 cols で ZONE 列の幅を確保するためのトレードオフ)。
+fn indicator_cell<'a>(is_cursor: bool, _is_alerting: bool, theme: &Theme) -> Cell<'a> {
     if is_cursor {
-        spans.push(Span::styled(cursor_glyph, theme.row_selected));
+        let cursor_glyph = if theme.mono { ">" } else { "▶" };
+        Cell::from(Span::styled(cursor_glyph, theme.row_selected))
     } else {
-        spans.push(Span::raw(" "));
+        Cell::from(" ")
     }
-    if is_alerting {
-        spans.push(Span::styled("!", theme.alert));
-    } else {
-        spans.push(Span::raw(" "));
-    }
-    Cell::from(Line::from(spans))
 }
 
 /// table 全体を rounded box (mono: plain) で囲み、その内側 `Rect` を返す。
@@ -1067,6 +1061,48 @@ fn right_aligned(s: &str, width: usize) -> String {
     } else {
         format!("{s:>width$}")
     }
+}
+
+/// Upstream タブの ZONE 列の最小表示幅。80 cols ターミナルでも他列を圧迫しない
+/// 下限値。`backend_api/127.0.0.1:9001` のような長い peer 名は wide 端末では
+/// 全長表示し、狭い端末でのみ `truncate_middle` で中央省略する。
+const UPSTREAM_ZONE_WIDTH_MIN: usize = 12;
+
+/// Upstream の ZONE 列に割り当てられる実描画幅 (cells) を、テーブル inner 幅から
+/// 逆算する。固定列 (RPS / 2xx% / ... / STATE) と列間スペーシングを引いた残りを
+/// ZONE が取る、という ratatui Table の振る舞いに合わせる。
+fn upstream_zone_render_width(inner_width: u16) -> usize {
+    // 固定列幅合計: indicator(1) + RPS(6) + 2xx%(6) + 4xx%(6) + 5xx%(6)
+    //              + p95(8) + IN/s(9) + OUT/s(9) + STATE(6) = 57
+    const FIXED_SUM: u16 = 57;
+    // 10 列の間に挿入される 9 個の 1 文字スペーサ。
+    const SPACING: u16 = 9;
+    let zone = inner_width.saturating_sub(FIXED_SUM + SPACING);
+    (zone as usize).max(UPSTREAM_ZONE_WIDTH_MIN)
+}
+
+/// `s` が `width` 文字以下ならそのまま、超えるなら中央に `…` を入れて両端を残す。
+///
+/// upstream の zone は `group/host:port` 形式で、識別に必要なのは末尾の port なので
+/// 末尾を残す中央省略を選ぶ。`width < 3` のケースは右側を切り捨てるだけにする
+/// (実運用では 12 以上を想定)。
+fn truncate_middle(s: &str, width: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= width {
+        return s.to_string();
+    }
+    if width < 3 {
+        return chars.into_iter().take(width).collect();
+    }
+    // 残りを左右に振り分け、末尾を 1 文字優先する (port 番号の末尾を残すため)。
+    let keep = width - 1; // `…` の分。
+    let right_keep = keep / 2 + (keep % 2);
+    let left_keep = keep - right_keep;
+    let mut out = String::with_capacity(width * 4);
+    out.extend(chars.iter().take(left_keep));
+    out.push('…');
+    out.extend(chars.iter().skip(chars.len() - right_keep));
+    out
 }
 
 /// Server タブを `area` に描画する (旧 `render`)。
@@ -1133,7 +1169,7 @@ fn render_server(f: &mut Frame<'_>, app: &App, area: Rect) {
             Row::new(vec![
                 indicator_cell(is_cursor, alerting, theme),
                 Cell::from(r.zone.clone()),
-                Cell::from(right_aligned(&format_rps(r.rps), 7)),
+                Cell::from(right_aligned(&format_rps(r.rps), 5)),
                 Cell::from(right_aligned(&format_ratio(r.r2xx_pct), 6)),
                 Cell::from(right_aligned(&format_ratio(r.r4xx_pct), 6)),
                 Cell::from(Span::styled(
@@ -1157,15 +1193,15 @@ fn render_server(f: &mut Frame<'_>, app: &App, area: Rect) {
         .collect();
 
     let widths = [
-        Constraint::Length(2),  // indicator (cursor ▶ + alert !)
-        Constraint::Min(10),    // ZONE (可変)
-        Constraint::Length(8),  // RPS
-        Constraint::Length(7),  // 2xx%
-        Constraint::Length(7),  // 4xx%
-        Constraint::Length(7),  // 5xx%
-        Constraint::Length(8),  // p95
-        Constraint::Length(10), // IN/s
-        Constraint::Length(10), // OUT/s
+        Constraint::Length(1), // indicator (cursor ▶)
+        Constraint::Min(10),   // ZONE (可変。80 cols で 19 cells に伸びる)
+        Constraint::Length(6), // RPS
+        Constraint::Length(6), // 2xx%
+        Constraint::Length(6), // 4xx%
+        Constraint::Length(6), // 5xx%
+        Constraint::Length(8), // p95
+        Constraint::Length(9), // IN/s
+        Constraint::Length(9), // OUT/s
     ];
 
     let table = Table::new(body_rows, widths)
@@ -1222,6 +1258,8 @@ fn render_upstream(f: &mut Frame<'_>, app: &App, area: Rect) {
         return;
     }
 
+    let zone_render_width = upstream_zone_render_width(inner.width);
+
     let theme = &app.theme;
     let mono = theme.mono;
     let header_row = Row::new(vec![
@@ -1261,8 +1299,8 @@ fn render_upstream(f: &mut Frame<'_>, app: &App, area: Rect) {
             };
             Row::new(vec![
                 indicator_cell(is_cursor, alerting, theme),
-                Cell::from(r.zone.clone()),
-                Cell::from(right_aligned(&format_rps(r.rps), 7)),
+                Cell::from(truncate_middle(&r.zone, zone_render_width)),
+                Cell::from(right_aligned(&format_rps(r.rps), 5)),
                 Cell::from(right_aligned(&format_ratio(r.r2xx_pct), 6)),
                 Cell::from(right_aligned(&format_ratio(r.r4xx_pct), 6)),
                 Cell::from(Span::styled(
@@ -1290,16 +1328,16 @@ fn render_upstream(f: &mut Frame<'_>, app: &App, area: Rect) {
         .collect();
 
     let widths = [
-        Constraint::Length(2),  // indicator
-        Constraint::Min(10),    // ZONE
-        Constraint::Length(8),  // RPS
-        Constraint::Length(7),  // 2xx%
-        Constraint::Length(7),  // 4xx%
-        Constraint::Length(7),  // 5xx%
-        Constraint::Length(8),  // p95
-        Constraint::Length(10), // IN/s
-        Constraint::Length(10), // OUT/s
-        Constraint::Length(7),  // STATE
+        Constraint::Length(1),                           // indicator
+        Constraint::Min(UPSTREAM_ZONE_WIDTH_MIN as u16), // ZONE
+        Constraint::Length(6),                           // RPS
+        Constraint::Length(6),                           // 2xx%
+        Constraint::Length(6),                           // 4xx%
+        Constraint::Length(6),                           // 5xx%
+        Constraint::Length(8),                           // p95
+        Constraint::Length(9),                           // IN/s
+        Constraint::Length(9),                           // OUT/s
+        Constraint::Length(6),                           // STATE
     ];
 
     let table = Table::new(body_rows, widths)
@@ -1378,9 +1416,9 @@ fn render_cache(f: &mut Frame<'_>, app: &App, area: Rect) {
                 indicator_cell(is_cursor, false, theme),
                 Cell::from(r.zone.clone()),
                 Cell::from(right_aligned(&format_ratio(r.hit_pct), 6)),
-                Cell::from(right_aligned(&r.miss.to_string(), 8)),
-                Cell::from(right_aligned(&r.expired.to_string(), 8)),
-                Cell::from(right_aligned(&r.stale.to_string(), 7)),
+                Cell::from(right_aligned(&r.miss.to_string(), 5)),
+                Cell::from(right_aligned(&r.expired.to_string(), 5)),
+                Cell::from(right_aligned(&r.stale.to_string(), 5)),
                 Cell::from(format_used(r.used_size, r.max_size)),
                 Cell::from(right_aligned(
                     &format_bps(r.bw_in_per_sec.round() as u64),
@@ -1394,16 +1432,20 @@ fn render_cache(f: &mut Frame<'_>, app: &App, area: Rect) {
         })
         .collect();
 
+    // 80 cols (inner=78) で全列を切らずに収めるための割付。Min(10)+Min(20)+30=
+    // 40 を Length 群に残す。1+6+5+5+5+9+9 = 40 でぴったり。
+    // EXPIRED 列見出しは Length(5) のため `EXPIR` まで切れるが、値 (実用上は
+    // 0..99999 の整数) は完全表示される。
     let widths = [
-        Constraint::Length(2),  // indicator
-        Constraint::Min(10),    // ZONE
-        Constraint::Length(7),  // HIT%
-        Constraint::Length(9),  // MISS
-        Constraint::Length(9),  // EXPIRED
-        Constraint::Length(8),  // STALE
-        Constraint::Length(22), // USED
-        Constraint::Length(10), // IN/s
-        Constraint::Length(10), // OUT/s
+        Constraint::Length(1), // indicator
+        Constraint::Min(10),   // ZONE
+        Constraint::Length(6), // HIT%
+        Constraint::Length(5), // MISS
+        Constraint::Length(5), // EXPIRED (header `EXPIRED` は `EXPIR` に短縮)
+        Constraint::Length(5), // STALE
+        Constraint::Min(20),   // USED (`xx.x KB / yy.y MB (zz%)` を完全表示)
+        Constraint::Length(9), // IN/s
+        Constraint::Length(9), // OUT/s
     ];
 
     let table = Table::new(body_rows, widths)
@@ -1491,7 +1533,7 @@ fn render_filter(f: &mut Frame<'_>, app: &App, area: Rect) {
             Row::new(vec![
                 indicator_cell(is_cursor, alerting, theme),
                 Cell::from(r.zone.clone()),
-                Cell::from(right_aligned(&format_rps(r.rps), 7)),
+                Cell::from(right_aligned(&format_rps(r.rps), 5)),
                 Cell::from(right_aligned(&format_ratio(r.r2xx_pct), 6)),
                 Cell::from(right_aligned(&format_ratio(r.r4xx_pct), 6)),
                 Cell::from(Span::styled(
@@ -1515,15 +1557,15 @@ fn render_filter(f: &mut Frame<'_>, app: &App, area: Rect) {
         .collect();
 
     let widths = [
-        Constraint::Length(2),
+        Constraint::Length(1),
         Constraint::Min(10),
+        Constraint::Length(6),
+        Constraint::Length(6),
+        Constraint::Length(6),
+        Constraint::Length(6),
         Constraint::Length(8),
-        Constraint::Length(7),
-        Constraint::Length(7),
-        Constraint::Length(7),
-        Constraint::Length(8),
-        Constraint::Length(10),
-        Constraint::Length(10),
+        Constraint::Length(9),
+        Constraint::Length(9),
     ];
 
     let table = Table::new(body_rows, widths)
@@ -2969,7 +3011,13 @@ mod tests {
         ));
         let out = draw_cache(&mut app, 100, 5);
         for h in &CACHE_HEADERS {
-            assert!(out.contains(h), "header {h} missing in:\n{out}");
+            // EXPIRED 列は 80 cols で他列を圧迫しないよう Length(5) に縮めて
+            // おり、見出しは `EXPIR` まで切れる (値は完全表示)。
+            let expected = if *h == "EXPIRED" { "EXPIR" } else { *h };
+            assert!(
+                out.contains(expected),
+                "header {expected} missing in:\n{out}"
+            );
         }
         assert!(out.contains("demo_cache"), "out:\n{out}");
         // hit=99, miss=1 → 99.0%
