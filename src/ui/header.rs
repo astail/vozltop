@@ -1,102 +1,188 @@
-//! TUI 上段 4 行のヘッダ widget (issue #27 / #119)。
+//! TUI 上段 7 行のヘッダ widget (issue #150)。
 //!
 //! ## レイアウト
 //!
 //! ```text
-//! ┌────────────────────────────────────────────────────────────────┐
-//! │ [Stale|Disconnected] consecutive failures: N                   │  <- 任意の状態 banner (1 行、ヘッダの「上」)
-//! ├────────────────────────────────────────────────────────────────┤
-//! │ Conn  [█████░░░░] 42/120   active 42  reading 3  writing 5  …  │  <- 行 1
-//! │ RPS   ▁▂▃▅▇▇▆▄▂▁                                       1234/s  │  <- 行 2
-//! │ in    ▁▂▃▅▇▆▄▂▁                                      1.2 MB/s  │  <- 行 3
-//! │ out   ▁▂▃▅▇▆▄▂▁                                      4.5 MB/s  │  <- 行 4
-//! └────────────────────────────────────────────────────────────────┘
+//! ╭─ ● api.prod · up 3d 14h ─────────────────────────────────────╮
+//! │ Conn   active 42   reading 3   writing 5   waiting 4          │
+//! │ ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄ │
+//! │ RPS  ▉▉▉▉▉▉▉▉▉▉▉▍░░░░░  1234/s   │  req  1.58 M               │
+//! │ IN   ▉▉▉▉▍░░░░░░░░░░░░  1.2 MB/s │  rx   1.50 GB              │
+//! │ OUT  ▉▉▉▉▉▉▉▉▉▉▉▉▉▉▍░░  4.5 MB/s │  tx   5.20 GB              │
+//! ╰───────────────────────────────────────────────────────────────╯
 //! ```
 //!
-//! ## 設計判断
+//! ## 設計判断 (issue #150)
 //!
-//! - **Gauge auto-scale**: `connections.worker_connections` は VTS JSON に
-//!   含まれないため、観測中の `rolling_max_active_conns` を分母に使う
-//!   (CLAUDE.md 設計判断より)。`max = 0` のときは `max(1)` で 0 除算を回避。
-//! - **Sparkline data 取り出し**: `History` は `VecDeque<u64>` で履歴を持つ
-//!   が ratatui の `Sparkline::data` は連続スライス相当を要求するため、毎
-//!   フレーム `Vec<u64>` を作って描画する。120 件 = 960 B / frame で
-//!   許容コスト。
-//! - **bytes/s 表示**: 本プロジェクトはまだ `humansize` を依存に加えていない
-//!   (CLAUDE.md は将来的な使用を予定)。1024 進の最大 5 段 (B/KB/MB/GB/TB)
-//!   で十分なので [`format_bps`] を inline で持つ。
-//! - **theme 連携**: ラベル / 数値の Style は `Theme::header_label` /
-//!   `Theme::header_value` を使用 (`Theme` 設計通り)。Gauge 自体の色は
-//!   ratatui 既定の `gauge_style` のまま (mono でも視認できる block 文字)。
+//! - **ヘッダ全体を rounded box で囲む** (mono は plain): ratatui の `Block` を
+//!   1 つだけ使い、内側 5 行を `Layout::vertical` で分割する。
+//! - **タイトル行に ● ステータスドット + host + uptime を集約**: 旧
+//!   `render_status_banner` を廃止して状態をタイトルに統合。
+//! - **bar は 1/8 サブセル smooth fill** (`█▉▊▋▌▍▎▏░`): ratatui `Gauge` 相当の
+//!   なめらかさを `Paragraph` 上で実現。
+//! - **Conn 行は絶対値表示のみ** (旧 Gauge 廃止): `rolling_max_active_conns` の
+//!   分母腐り問題を bar ごと撤廃して根本解決。
+//! - **RPS / IN/OUT bar の分母**: RPS は独立 60s sliding peak、IN/OUT は共通
+//!   `peak_bw` (per-sample `max(in, out)` の 60s 内最大) で正規化。
+//! - **右内カラム** (`│` 区切り) は累計値 (req / rx / tx)。Conn 行は full width。
 
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Gauge, Paragraph, Sparkline};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::state::{App, AppStatus};
 
-/// ヘッダの行数 (固定 4 行: Conn / RPS / in / out)。
-pub const HEADER_HEIGHT: u16 = 4;
+/// ヘッダの行数 (固定 7 行 = 上枠 1 + 内側 5 + 下枠 1)。
+pub const HEADER_HEIGHT: u16 = 7;
 
-/// `Stale` / `Disconnected` 状態のときに、ヘッダの上に 1 行の status banner
-/// を差し込むべきかを判定する。
-pub fn show_status_banner(app: &App) -> bool {
-    matches!(
-        app.status,
-        AppStatus::Stale { .. } | AppStatus::Disconnected { .. }
-    )
-}
+/// 1/8 サブセル smooth bar のグリフ (1/8 〜 7/8)。
+/// 8/8 は `█` として独立扱い (full block で promote)。
+const EIGHTHS: [char; 7] = ['▏', '▎', '▍', '▌', '▋', '▊', '▉'];
 
-/// `[Stale]` / `[Disconnected]` の 1 行 banner を描画する。
+/// area を 1 つの rounded box で囲み、その内側に 5 行 (Conn / divider / RPS / IN / OUT)
+/// を描画する。
 ///
-/// `app.status` が `Connecting` / `Running` の場合は何も描画しない
-/// (呼び出し側で [`show_status_banner`] により area 自体を確保しない想定)。
-pub fn render_status_banner(f: &mut Frame<'_>, app: &App, area: Rect) {
-    let (label, style) = match &app.status {
-        AppStatus::Stale { failures, .. } => (
-            format!("[Stale]  consecutive failures: {failures}"),
-            app.theme.status_warn,
-        ),
-        AppStatus::Disconnected { failures } => (
-            format!("[Disconnected]  consecutive failures: {failures}"),
-            app.theme.status_err,
-        ),
-        AppStatus::Connecting | AppStatus::Running => return,
+/// `suppress_host_in_title` が `true` のとき、タイトル行から host 名を省く
+/// (Workspace multi-host モードでは host 名が上段の host タブバーに既出のため、
+/// 二重表示を避ける目的)。単一 host モードでは `false` を渡す。
+pub fn render(f: &mut Frame<'_>, app: &App, area: Rect, suppress_host_in_title: bool) {
+    if area.height < HEADER_HEIGHT || area.width < 4 {
+        // 安全側: 極端な resize で何も描かない。panic はしない。
+        return;
+    }
+
+    let border_type = if app.theme.mono {
+        BorderType::Plain
+    } else {
+        BorderType::Rounded
     };
-    f.render_widget(Paragraph::new(Line::from(Span::styled(label, style))), area);
-}
+    let title_line = build_title_line(app, suppress_host_in_title);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(border_type)
+        .border_style(app.theme.border)
+        .title(title_line);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
-/// `area` を 4 等分してヘッダを描画する。
-///
-/// `area.height < 4` の場合は下の行から欠ける (ratatui の `Layout` 既定挙動)。
-/// `area.width` が極端に小さい場合も panic はしない (各 widget が clip)。
-pub fn render(f: &mut Frame<'_>, app: &App, area: Rect) {
+    if inner.height < 5 {
+        return;
+    }
+
     let rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
+        Constraint::Length(1), // Conn
+        Constraint::Length(1), // divider
+        Constraint::Length(1), // RPS
+        Constraint::Length(1), // IN
+        Constraint::Length(1), // OUT
     ])
-    .split(area);
+    .split(inner);
 
-    if let Some(r) = rows.first() {
-        render_conn_row(f, app, *r);
-    }
-    if let Some(r) = rows.get(1) {
-        render_rps_row(f, app, *r);
-    }
-    if let Some(r) = rows.get(2) {
-        let data: Vec<u64> = app.history.bw_in_history().iter().copied().collect();
-        render_bw_row(f, app, *r, "in   ", &data);
-    }
-    if let Some(r) = rows.get(3) {
-        let data: Vec<u64> = app.history.bw_out_history().iter().copied().collect();
-        render_bw_row(f, app, *r, "out  ", &data);
-    }
+    render_conn_row(f, app, rows[0]);
+    render_divider(f, app, rows[1]);
+
+    let peak_rps = app.history.peak_rps();
+    let peak_bw = app.history.peak_bw();
+    let (rps_now, bw_in_now, bw_out_now) = app
+        .history
+        .latest()
+        .map(|s| s.derived.server_totals())
+        .unwrap_or((0, 0, 0));
+
+    let total_req = app.history.total_requests();
+    let total_rx = app.history.total_in_bytes();
+    let total_tx = app.history.total_out_bytes();
+
+    render_bar_row(
+        f,
+        app,
+        rows[2],
+        "RPS",
+        rps_now,
+        peak_rps,
+        &format!("{rps_now}/s"),
+        "req",
+        &format_count(total_req),
+    );
+    render_bar_row(
+        f,
+        app,
+        rows[3],
+        "IN",
+        bw_in_now,
+        peak_bw,
+        &format_bps(bw_in_now),
+        "rx",
+        &format_bytes(total_rx),
+    );
+    render_bar_row(
+        f,
+        app,
+        rows[4],
+        "OUT",
+        bw_out_now,
+        peak_bw,
+        &format_bps(bw_out_now),
+        "tx",
+        &format_bytes(total_tx),
+    );
 }
 
-// ---------- 行 1: connections ----------
+// ---------- タイトル行 ----------
+
+/// タイトル文字列を `Line` として組み立てる。
+///
+/// `● {status_label} · {host} · up {uptime}` の形。
+/// - Running: ラベル省略 (`● api.prod · up 3d 14h`)
+/// - Connecting: `● Connecting`
+/// - Stale: `● Stale (3) · api.prod · up 3d 14h`
+/// - Disconnected: `● Disconnected (5) · api.prod · up 3d 14h`
+///
+/// `suppress_host` が `true` のとき host 名は出力しない (Workspace multi-host
+/// モードで host タブバーと重複させないため)。
+fn build_title_line(app: &App, suppress_host: bool) -> Line<'static> {
+    let (dot_style, status_label): (Style, Option<String>) = match &app.status {
+        AppStatus::Connecting => (app.theme.status_warn, Some("Connecting".to_string())),
+        AppStatus::Running => (app.theme.status_ok, None),
+        AppStatus::Stale { failures, .. } => {
+            (app.theme.status_warn, Some(format!("Stale ({failures})")))
+        }
+        AppStatus::Disconnected { failures } => (
+            app.theme.status_err,
+            Some(format!("Disconnected ({failures})")),
+        ),
+    };
+
+    let host = app
+        .history
+        .latest()
+        .map(|s| s.status.host_name.clone())
+        .unwrap_or_default();
+    let uptime_ms = app.history.uptime_ms();
+
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(8);
+    // 左端に空白 1 文字を入れて枠線とドットを離す
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled("●", dot_style));
+    if let Some(label) = status_label {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(label, app.theme.title));
+    }
+    if !suppress_host && !host.is_empty() {
+        spans.push(Span::raw(" · "));
+        spans.push(Span::styled(host, app.theme.title));
+    }
+    if uptime_ms > 0 {
+        spans.push(Span::raw(" · up "));
+        spans.push(Span::styled(format_uptime(uptime_ms), app.theme.title));
+    }
+    spans.push(Span::raw(" "));
+    Line::from(spans)
+}
+
+// ---------- 内側 5 行の描画 ----------
 
 fn render_conn_row(f: &mut Frame<'_>, app: &App, area: Rect) {
     let conns = app.history.latest().map(|s| &s.status.connections);
@@ -105,27 +191,10 @@ fn render_conn_row(f: &mut Frame<'_>, app: &App, area: Rect) {
     let writing = conns.map(|c| c.writing).unwrap_or(0);
     let waiting = conns.map(|c| c.waiting).unwrap_or(0);
 
-    // rolling-max は最低 1 にして 0 除算を防ぐ。ratio は [0,1] にクランプ。
-    let scale_max = app.history.rolling_max_active_conns().max(1);
-    let ratio = ((active as f64) / (scale_max as f64)).clamp(0.0, 1.0);
-
-    let [conn_label, gauge_area, detail_area] = Layout::horizontal([
-        Constraint::Length(5),  // "Conn "
-        Constraint::Length(20), // Gauge
-        Constraint::Fill(1),
-    ])
-    .areas(area);
-
-    f.render_widget(
-        Paragraph::new(Span::styled("Conn ", app.theme.header_label)),
-        conn_label,
-    );
-
-    let gauge_label = format!("{active}/{scale_max}");
-    f.render_widget(Gauge::default().ratio(ratio).label(gauge_label), gauge_area);
-
-    let detail = Line::from(vec![
-        Span::raw("  active "),
+    let line = Line::from(vec![
+        Span::raw(" "),
+        Span::styled("Conn", app.theme.header_label),
+        Span::raw("   active "),
         Span::styled(active.to_string(), app.theme.header_value),
         Span::raw("  reading "),
         Span::styled(reading.to_string(), app.theme.header_value),
@@ -134,72 +203,205 @@ fn render_conn_row(f: &mut Frame<'_>, app: &App, area: Rect) {
         Span::raw("  waiting "),
         Span::styled(waiting.to_string(), app.theme.header_value),
     ]);
-    f.render_widget(Paragraph::new(detail), detail_area);
+    f.render_widget(Paragraph::new(line), area);
 }
 
-// ---------- 行 2: RPS ----------
-
-fn render_rps_row(f: &mut Frame<'_>, app: &App, area: Rect) {
-    let rps_data: Vec<u64> = app.history.rps_history().iter().copied().collect();
-    let rps_now = rps_data.last().copied().unwrap_or(0);
-
-    let [label, spark, rps_text] = Layout::horizontal([
-        Constraint::Length(5),  // "RPS "
-        Constraint::Fill(1),    // sparkline (残り)
-        Constraint::Length(12), // " 1234/s"
-    ])
-    .areas(area);
-
+fn render_divider(f: &mut Frame<'_>, app: &App, area: Rect) {
+    if area.width == 0 {
+        return;
+    }
+    let mut s = String::with_capacity(area.width as usize * 3);
+    for _ in 0..area.width {
+        s.push('┄');
+    }
     f.render_widget(
-        Paragraph::new(Span::styled("RPS  ", app.theme.header_label)),
-        label,
-    );
-    f.render_widget(Sparkline::default().data(&rps_data), spark);
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            format!(" {rps_now}/s"),
-            app.theme.header_value,
-        )),
-        rps_text,
+        Paragraph::new(Line::from(Span::styled(s, app.theme.separator))),
+        area,
     );
 }
 
-// ---------- 行 3 / 4: BW in / out (1 行ずつ独立) ----------
-
-/// in / out それぞれを 1 行ぶん描画する。
+/// 1 つの bar 行 (RPS / IN / OUT) を描画する。
 ///
-/// 横レイアウトは RPS 行と揃え (`Length(5) + Fill(1) + Length(13)`)、ラベル列を
-/// `Conn ` / `RPS  ` と同じ 5 桁にすることで縦のラベル位置が揃う。
-fn render_bw_row(f: &mut Frame<'_>, app: &App, area: Rect, label: &'static str, data: &[u64]) {
-    let now = data.last().copied().unwrap_or(0);
+/// 横レイアウト: `[Length(5), Fill(1), Length(12), Length(3), Length(20)]`
+/// = ラベル / bar / 現在値 / `│` 区切り / 右内カラム (`req 1.58 M` 等)
+///
+/// `area.width` が狭くて右内カラムが入らない場合は右カラム + `│` を省略し、
+/// bar 領域を Fill(1) に伸ばす (`area.width < 5 + 12 + 3 + RIGHT_BUDGET + 2`)。
+#[allow(clippy::too_many_arguments)]
+fn render_bar_row(
+    f: &mut Frame<'_>,
+    app: &App,
+    area: Rect,
+    label: &str,
+    current: u64,
+    peak: u64,
+    value_text: &str,
+    total_label: &str,
+    total_value: &str,
+) {
+    const LABEL_WIDTH: u16 = 5;
+    const VALUE_WIDTH: u16 = 12;
+    const SEP_WIDTH: u16 = 3;
+    const RIGHT_WIDTH: u16 = 20;
+    const MIN_BAR: u16 = 8;
+    let show_right_column =
+        area.width >= LABEL_WIDTH + MIN_BAR + VALUE_WIDTH + SEP_WIDTH + RIGHT_WIDTH;
 
-    let [label_area, spark_area, text_area] = Layout::horizontal([
-        Constraint::Length(5),  // "in   " or "out  "
-        Constraint::Fill(1),    // sparkline (残り)
-        Constraint::Length(13), // " 1234.5 MB/s"
-    ])
-    .areas(area);
+    let chunks = if show_right_column {
+        Layout::horizontal([
+            Constraint::Length(LABEL_WIDTH),
+            Constraint::Fill(1),
+            Constraint::Length(VALUE_WIDTH),
+            Constraint::Length(SEP_WIDTH),
+            Constraint::Length(RIGHT_WIDTH),
+        ])
+        .split(area)
+    } else {
+        Layout::horizontal([
+            Constraint::Length(LABEL_WIDTH),
+            Constraint::Fill(1),
+            Constraint::Length(VALUE_WIDTH),
+        ])
+        .split(area)
+    };
 
+    // label
     f.render_widget(
-        Paragraph::new(Span::styled(label, app.theme.header_label)),
-        label_area,
+        Paragraph::new(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(label.to_string(), app.theme.header_label),
+        ])),
+        chunks[0],
     );
-    f.render_widget(Sparkline::default().data(data), spark_area);
+
+    // bar
+    let bar_area = chunks[1];
+    let bar_width = bar_area.width;
+    let (filled, empty) = smooth_bar(bar_width, current, peak);
     f.render_widget(
-        Paragraph::new(Span::styled(
-            format!(" {}", format_bps(now)),
-            app.theme.header_value,
-        )),
-        text_area,
+        Paragraph::new(Line::from(vec![
+            Span::styled(filled, app.theme.bar_filled),
+            Span::styled(empty, app.theme.bar_empty),
+        ])),
+        bar_area,
     );
+
+    // value
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(value_text.to_string(), app.theme.header_value),
+        ])),
+        chunks[2],
+    );
+
+    if show_right_column {
+        // separator `│`
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(" │ ", app.theme.separator))),
+            chunks[3],
+        );
+        // right column: " {label}  {value}"
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::raw(" "),
+                Span::styled(total_label.to_string(), app.theme.header_label),
+                Span::raw("  "),
+                Span::styled(total_value.to_string(), app.theme.header_value),
+            ])),
+            chunks[4],
+        );
+    }
 }
 
-// ---------- 集計 / フォーマット helper ----------
+// ---------- フォーマッタ ----------
 
-/// bytes-per-second を人間可読 ("1.2 MB/s" 等) に整形する。
-///
-/// 1024 進、小数 1 桁。範囲を `u64::MAX` まで持たせるため最大 TB/s まで扱う
-/// (実用上は MB/s 〜 GB/s で十分)。
+/// `current` / `peak` を `width` cells の 1/8 サブセル smooth bar に整形する。
+/// 戻り値は `(filled, empty)` の 2 文字列。連結すると `width` cells になる。
+fn smooth_bar(width: u16, current: u64, peak: u64) -> (String, String) {
+    if width == 0 {
+        return (String::new(), String::new());
+    }
+    let ratio = if peak == 0 {
+        0.0
+    } else {
+        (current as f64 / peak as f64).clamp(0.0, 1.0)
+    };
+    let total_eighths = width as u32 * 8;
+    let filled_eighths = ((ratio * width as f64 * 8.0).round() as u32).min(total_eighths);
+    let full = (filled_eighths / 8) as u16;
+    let partial = (filled_eighths % 8) as usize;
+
+    let mut filled = String::with_capacity((full as usize + 1) * 3);
+    for _ in 0..full {
+        filled.push('█');
+    }
+    let used_partial = if full < width && partial > 0 {
+        filled.push(EIGHTHS[partial - 1]);
+        1
+    } else {
+        0
+    };
+    let empty_cells = width.saturating_sub(full + used_partial);
+    let mut empty = String::with_capacity(empty_cells as usize * 3);
+    for _ in 0..empty_cells {
+        empty.push('░');
+    }
+    (filled, empty)
+}
+
+/// uptime ミリ秒を `3d 14h` / `4h 22m` / `45m 12s` に整形する。
+pub(crate) fn format_uptime(ms: u64) -> String {
+    let total_secs = ms / 1000;
+    let days = total_secs / 86_400;
+    let hours = (total_secs % 86_400) / 3600;
+    let minutes = (total_secs % 3600) / 60;
+    let seconds = total_secs % 60;
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else {
+        format!("{minutes}m {seconds}s")
+    }
+}
+
+/// 累計件数 (req 用) を 10 進 SI prefix で整形する: `1.58 M` / `45.2 K`。
+pub(crate) fn format_count(n: u64) -> String {
+    if n < 1_000 {
+        format!("{n}")
+    } else if n < 1_000_000 {
+        format!("{:.1} K", n as f64 / 1_000.0)
+    } else if n < 1_000_000_000 {
+        format!("{:.2} M", n as f64 / 1_000_000.0)
+    } else if n < 1_000_000_000_000 {
+        format!("{:.2} G", n as f64 / 1_000_000_000.0)
+    } else {
+        format!("{:.2} T", n as f64 / 1_000_000_000_000.0)
+    }
+}
+
+/// 累計バイト数 (rx / tx 用) を 1024 進で整形する: `1.50 GB` / `512 MB`。
+/// `format_bps` から `/s` を抜いた派生。
+pub(crate) fn format_bytes(n: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    const TB: u64 = GB * 1024;
+    if n < KB {
+        format!("{n} B")
+    } else if n < MB {
+        format!("{:.1} KB", n as f64 / KB as f64)
+    } else if n < GB {
+        format!("{:.1} MB", n as f64 / MB as f64)
+    } else if n < TB {
+        format!("{:.2} GB", n as f64 / GB as f64)
+    } else {
+        format!("{:.2} TB", n as f64 / TB as f64)
+    }
+}
+
+/// bytes-per-second を `1.2 MB/s` 形式に整形する (issue #27 から流用)。
 pub(crate) fn format_bps(n: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
@@ -237,7 +439,7 @@ mod tests {
         waiting: u64,
     ) -> Snapshot {
         let raw = serde_json::json!({
-            "hostName": "h", "nginxVersion": "1", "moduleVersion": "v",
+            "hostName": "host1", "nginxVersion": "1", "moduleVersion": "v",
             "loadMsec": 0u64, "nowMsec": now_msec,
             "connections": {
                 "active": active, "reading": reading, "writing": writing,
@@ -253,12 +455,16 @@ mod tests {
     }
 
     fn draw(app: &App, w: u16, h: u16) -> String {
+        draw_with(app, w, h, false)
+    }
+
+    fn draw_with(app: &App, w: u16, h: u16, suppress_host: bool) -> String {
         let backend = TestBackend::new(w, h);
         let mut terminal = Terminal::new(backend).expect("term");
         terminal
             .draw(|f| {
                 let area = f.area();
-                render(f, app, area);
+                render(f, app, area, suppress_host);
             })
             .expect("draw");
         let buf = terminal.backend().buffer().clone();
@@ -272,6 +478,66 @@ mod tests {
         s
     }
 
+    // ---------- format_uptime ----------
+
+    #[test]
+    fn format_uptime_seconds() {
+        assert_eq!(format_uptime(45 * 1000), "0m 45s");
+    }
+    #[test]
+    fn format_uptime_minutes() {
+        assert_eq!(format_uptime((45 * 60 + 12) * 1000), "45m 12s");
+    }
+    #[test]
+    fn format_uptime_hours() {
+        assert_eq!(format_uptime((4 * 3600 + 22 * 60) * 1000), "4h 22m");
+    }
+    #[test]
+    fn format_uptime_days() {
+        assert_eq!(format_uptime((3 * 86400 + 14 * 3600) * 1000), "3d 14h");
+    }
+
+    // ---------- format_count ----------
+
+    #[test]
+    fn format_count_below_1k() {
+        assert_eq!(format_count(0), "0");
+        assert_eq!(format_count(999), "999");
+    }
+    #[test]
+    fn format_count_kilo() {
+        assert_eq!(format_count(1_000), "1.0 K");
+        assert_eq!(format_count(45_234), "45.2 K");
+    }
+    #[test]
+    fn format_count_mega() {
+        assert_eq!(format_count(1_580_000), "1.58 M");
+    }
+    #[test]
+    fn format_count_giga() {
+        assert_eq!(format_count(2_500_000_000), "2.50 G");
+    }
+
+    // ---------- format_bytes ----------
+
+    #[test]
+    fn format_bytes_b() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(1023), "1023 B");
+    }
+    #[test]
+    fn format_bytes_kb() {
+        assert_eq!(format_bytes(1024), "1.0 KB");
+    }
+    #[test]
+    fn format_bytes_mb() {
+        assert_eq!(format_bytes(1024 * 1024), "1.0 MB");
+    }
+    #[test]
+    fn format_bytes_gb() {
+        assert_eq!(format_bytes(1024u64.pow(3)), "1.00 GB");
+    }
+
     // ---------- format_bps ----------
 
     #[test]
@@ -282,48 +548,67 @@ mod tests {
     #[test]
     fn format_bps_kilobytes() {
         assert_eq!(format_bps(1024), "1.0 KB/s");
-        assert_eq!(format_bps(1536), "1.5 KB/s");
     }
     #[test]
     fn format_bps_megabytes() {
         assert_eq!(format_bps(1024 * 1024), "1.0 MB/s");
-        assert_eq!(format_bps(1024 * 1024 * 3 + 1024 * 512), "3.5 MB/s");
-    }
-    #[test]
-    fn format_bps_gigabytes() {
-        assert_eq!(format_bps(1024u64.pow(3)), "1.0 GB/s");
-    }
-    #[test]
-    fn format_bps_terabytes() {
-        assert_eq!(format_bps(1024u64.pow(4)), "1.0 TB/s");
     }
 
-    // ---------- show_status_banner ----------
+    // ---------- smooth_bar ----------
 
     #[test]
-    fn status_banner_only_for_stale_or_disconnected() {
-        let mut app = App::new();
-        assert!(!show_status_banner(&app));
-        app.status = AppStatus::Running;
-        assert!(!show_status_banner(&app));
-        app.status = AppStatus::Disconnected { failures: 3 };
-        assert!(show_status_banner(&app));
-        app.status = AppStatus::Stale {
-            last_ok: std::time::Instant::now(),
-            failures: 2,
-        };
-        assert!(show_status_banner(&app));
+    fn smooth_bar_empty_when_peak_zero() {
+        let (f, e) = smooth_bar(10, 100, 0);
+        assert_eq!(f, "");
+        assert_eq!(e, "░░░░░░░░░░");
+    }
+
+    #[test]
+    fn smooth_bar_full_when_current_equals_peak() {
+        let (f, e) = smooth_bar(10, 100, 100);
+        assert_eq!(f, "██████████");
+        assert_eq!(e, "");
+    }
+
+    #[test]
+    fn smooth_bar_half_uses_full_blocks() {
+        let (f, e) = smooth_bar(10, 50, 100);
+        assert_eq!(f, "█████");
+        assert_eq!(e, "░░░░░");
+    }
+
+    #[test]
+    fn smooth_bar_partial_uses_subcell() {
+        let (f, e) = smooth_bar(10, 45, 100);
+        assert!(f.starts_with("████"));
+        assert_eq!(f.chars().count(), 5, "4 full + 1 partial");
+        assert_eq!(e.chars().count(), 5);
+    }
+
+    #[test]
+    fn smooth_bar_width_zero_returns_empty() {
+        let (f, e) = smooth_bar(0, 1, 1);
+        assert_eq!(f, "");
+        assert_eq!(e, "");
     }
 
     // ---------- header 描画 ----------
 
     #[test]
-    fn header_renders_conn_gauge_and_counts() {
+    fn header_renders_seven_rows_with_rounded_box() {
+        let app = App::new();
+        let out = draw(&app, 80, HEADER_HEIGHT);
+        // 上下が rounded box の境界 (╭ ╮ ╰ ╯ または ─) で描画される
+        assert!(out.contains('╭') || out.contains('┌'), "out:\n{out}");
+        assert!(out.contains('╰') || out.contains('└'), "out:\n{out}");
+    }
+
+    #[test]
+    fn header_renders_conn_breakdown() {
         let mut app = App::new();
         app.history.push(snapshot_with_conns(1000, 12, 3, 5, 4));
         let out = draw(&app, 80, HEADER_HEIGHT);
         assert!(out.contains("Conn"), "out:\n{out}");
-        // 数値 "12" "3" "5" "4" がすべて含まれること
         assert!(out.contains("active 12"), "out:\n{out}");
         assert!(out.contains("reading 3"), "out:\n{out}");
         assert!(out.contains("writing 5"), "out:\n{out}");
@@ -331,82 +616,113 @@ mod tests {
     }
 
     #[test]
-    fn header_renders_rps_label_when_no_data() {
+    fn header_renders_three_bar_labels() {
         let app = App::new();
         let out = draw(&app, 80, HEADER_HEIGHT);
         assert!(out.contains("RPS"), "out:\n{out}");
+        assert!(out.contains("IN"), "out:\n{out}");
+        assert!(out.contains("OUT"), "out:\n{out}");
     }
 
     #[test]
-    fn header_renders_bw_in_and_out_labels() {
+    fn header_renders_divider_with_dashed_glyph() {
         let app = App::new();
         let out = draw(&app, 80, HEADER_HEIGHT);
-        // 行 3 に "in" / "out" のラベルが出ること
-        assert!(out.contains("in"), "out:\n{out}");
-        assert!(out.contains("out"), "out:\n{out}");
-        // データ無しは "0 B/s" 表示
-        assert!(out.contains("0 B/s"), "out:\n{out}");
+        assert!(out.contains('┄'), "divider should use ┄; out:\n{out}");
     }
 
     #[test]
-    fn status_banner_renders_stale_label() {
+    fn header_title_shows_host_when_running() {
         let mut app = App::new();
+        app.history.push(snapshot_with_conns(1000, 1, 0, 1, 0));
+        app.status = AppStatus::Running;
+        let out = draw(&app, 80, HEADER_HEIGHT);
+        assert!(out.contains("host1"), "out:\n{out}");
+    }
+
+    #[test]
+    fn header_title_shows_status_label_when_stale() {
+        let mut app = App::new();
+        app.history.push(snapshot_with_conns(1000, 1, 0, 1, 0));
         app.status = AppStatus::Stale {
             last_ok: std::time::Instant::now(),
-            failures: 2,
+            failures: 3,
         };
-        // ヘッダ + banner で 4 行ぶん使う想定 (UI mod 側の合成は別テストで担保)
-        let backend = TestBackend::new(80, 1);
-        let mut terminal = Terminal::new(backend).expect("term");
-        terminal
-            .draw(|f| {
-                let area = f.area();
-                render_status_banner(f, &app, area);
-            })
-            .expect("draw");
-        let buf = terminal.backend().buffer().clone();
-        let mut s = String::new();
-        for x in 0..buf.area.width {
-            s.push_str(buf[(x, 0)].symbol());
-        }
-        assert!(s.contains("Stale"), "out: {s}");
-        assert!(s.contains("failures: 2"), "out: {s}");
+        let out = draw(&app, 80, HEADER_HEIGHT);
+        assert!(out.contains("Stale"), "out:\n{out}");
+        assert!(out.contains("(3)"), "out:\n{out}");
     }
 
     #[test]
-    fn status_banner_renders_disconnected_label() {
+    fn header_title_shows_status_label_when_disconnected() {
         let mut app = App::new();
         app.status = AppStatus::Disconnected { failures: 5 };
-        let backend = TestBackend::new(80, 1);
-        let mut terminal = Terminal::new(backend).expect("term");
-        terminal
-            .draw(|f| {
-                let area = f.area();
-                render_status_banner(f, &app, area);
-            })
-            .expect("draw");
-        let buf = terminal.backend().buffer().clone();
-        let mut s = String::new();
-        for x in 0..buf.area.width {
-            s.push_str(buf[(x, 0)].symbol());
-        }
-        assert!(s.contains("Disconnected"), "out: {s}");
-        assert!(s.contains("failures: 5"), "out: {s}");
+        let out = draw(&app, 80, HEADER_HEIGHT);
+        assert!(out.contains("Disconnected"), "out:\n{out}");
+        assert!(out.contains("(5)"), "out:\n{out}");
     }
 
     #[test]
-    fn fits_in_80x3_layout() {
-        // 80x24 で崩れない (受け入れ条件)。最小高さで panic しないことも確認。
-        let app = App::new();
-        let _ = draw(&app, 80, HEADER_HEIGHT);
+    fn header_renders_cumulative_labels_in_right_column() {
+        let mut app = App::new();
+        app.history.push(snapshot_with_conns(1000, 1, 0, 1, 0));
+        let out = draw(&app, 80, HEADER_HEIGHT);
+        assert!(out.contains(" req "), "out:\n{out}");
+        assert!(out.contains(" rx "), "out:\n{out}");
+        assert!(out.contains(" tx "), "out:\n{out}");
     }
 
     #[test]
-    fn renders_in_mono_theme() {
+    fn header_renders_pipe_separator_in_bar_rows() {
+        let mut app = App::new();
+        app.history.push(snapshot_with_conns(1000, 1, 0, 1, 0));
+        let out = draw(&app, 80, HEADER_HEIGHT);
+        assert!(out.contains('│'), "out:\n{out}");
+    }
+
+    #[test]
+    fn header_renders_in_mono_theme_without_panic() {
         let mut app = App::with_theme(Theme::mono());
         app.history.push(snapshot_with_conns(1000, 1, 0, 1, 0));
         let out = draw(&app, 80, HEADER_HEIGHT);
         assert!(out.contains("Conn"), "out:\n{out}");
         assert!(out.contains("active 1"), "out:\n{out}");
+    }
+
+    #[test]
+    fn header_does_not_panic_when_too_short() {
+        let app = App::new();
+        let backend = TestBackend::new(80, 3);
+        let mut terminal = Terminal::new(backend).expect("term");
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render(f, &app, area, false);
+            })
+            .expect("draw");
+    }
+
+    #[test]
+    fn multi_host_workspace_suppresses_host_in_title() {
+        // issue #150 受入条件: Workspace multi-host モードではタイトル host 名が
+        // 省略される (host タブバーと二重表示しないため)。
+        // snapshot_with_conns は host_name="host1" を仕込むので、その文字列で判定する。
+        let mut app = App::new();
+        app.history.push(snapshot_with_conns(1000, 1, 0, 1, 0));
+
+        let with_host = draw_with(&app, 80, HEADER_HEIGHT, false);
+        assert!(
+            with_host.contains("host1"),
+            "single-host mode should include host name in title:\n{with_host}"
+        );
+
+        let without_host = draw_with(&app, 80, HEADER_HEIGHT, true);
+        assert!(
+            !without_host.contains("host1"),
+            "multi-host mode should suppress host name in title:\n{without_host}"
+        );
+        // ● ドット + Conn 行などその他のヘッダ要素は残る
+        assert!(without_host.contains('●'), "out:\n{without_host}");
+        assert!(without_host.contains("Conn"), "out:\n{without_host}");
     }
 }
