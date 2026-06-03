@@ -60,9 +60,7 @@ use std::cmp::Ordering;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, BorderType, Borders, Cell, Padding, Paragraph, Row, Table, TableState,
-};
+use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table, TableState};
 use ratatui::Frame;
 
 use crate::model::{Responses, ServerZone, UpstreamServer, VtsStatus};
@@ -1024,9 +1022,13 @@ fn indicator_cell<'a>(is_cursor: bool, _is_alerting: bool, theme: &Theme) -> Cel
 /// table 全体を rounded box (mono: plain) で囲み、その内側 `Rect` を返す。
 /// 呼び出し側は inner に対して `render_stateful_widget` する。
 ///
-/// `Padding::right(3)` で最終列 (OUT/s 等) と右枠線の間に 3 セル分の
-/// 余白を確保する (issue #152 ユーザフィードバック: 値が枠線に張り付いて
-/// 読みにくいため)。
+/// Server / Filter タブの Table は最右端に `Constraint::Length(2)` の空セル列を
+/// 持ち、column_spacing 1 と合わせて最終データ列 (OUT/s) と右枠線の間に 3 セル
+/// 分の余白を作っている (issue #152 ユーザフィードバック)。Block 側で
+/// `Padding::right` を使うとヘッダ行のシアン背景が右端まで届かないため、
+/// 空セル列方式で Row.style を最終列まで伸ばしている。Upstream / Cache タブは
+/// 既存の列構成で 78 cells (= 80cols ターミナルの inner 幅) を使い切っている
+/// ため末尾列を入れる余地がなく、値の truncate を避けて据え置き。
 fn render_tab_box(f: &mut Frame<'_>, app: &App, area: Rect, title: String) -> Rect {
     let border_type = if app.theme.mono {
         BorderType::Plain
@@ -1037,12 +1039,16 @@ fn render_tab_box(f: &mut Frame<'_>, app: &App, area: Rect, title: String) -> Re
         .borders(Borders::ALL)
         .border_type(border_type)
         .border_style(app.theme.border)
-        .padding(Padding::right(3))
         .title(Span::styled(title, app.theme.title));
     let inner = block.inner(area);
     f.render_widget(block, area);
     inner
 }
+
+/// Server / Filter タブの末尾に追加する空セル列の幅。column_spacing(1) と
+/// 合わせて最終データ列と右枠線の間に 3 セル分の余白を確保する。ヘッダ行
+/// Row.style (cyan reversed) はこの空列も塗るため、シアン帯が右端まで届く。
+const TRAILING_SPACER_WIDTH: u16 = 2;
 
 /// 「データなし」プレースホルダ描画 (4 タブ共通)。box 込み。
 fn render_no_data(f: &mut Frame<'_>, app: &App, area: Rect, tab: Tab) {
@@ -1154,6 +1160,7 @@ fn render_server(f: &mut Frame<'_>, app: &App, area: Rect) {
         header_cell_with_sort("p95", 5, app.sort, theme),
         header_cell_with_sort("IN/s", 6, app.sort, theme),
         header_cell_with_sort("OUT/s", 7, app.sort, theme),
+        Cell::from(""),
     ])
     .style(theme.table_header.add_modifier(Modifier::UNDERLINED));
 
@@ -1195,20 +1202,22 @@ fn render_server(f: &mut Frame<'_>, app: &App, area: Rect) {
                     &format_bps(r.bw_out_per_sec.round() as u64),
                     9,
                 )),
+                Cell::from(""),
             ])
         })
         .collect();
 
     let widths = [
-        Constraint::Length(1), // indicator (cursor ▶)
-        Constraint::Min(10),   // ZONE (可変。80 cols で 19 cells に伸びる)
-        Constraint::Length(6), // RPS
-        Constraint::Length(6), // 2xx%
-        Constraint::Length(6), // 4xx%
-        Constraint::Length(6), // 5xx%
-        Constraint::Length(8), // p95
-        Constraint::Length(9), // IN/s
-        Constraint::Length(9), // OUT/s
+        Constraint::Length(1),                     // indicator (cursor ▶)
+        Constraint::Min(10),                       // ZONE (可変。80 cols で 19 cells に伸びる)
+        Constraint::Length(6),                     // RPS
+        Constraint::Length(6),                     // 2xx%
+        Constraint::Length(6),                     // 4xx%
+        Constraint::Length(6),                     // 5xx%
+        Constraint::Length(8),                     // p95
+        Constraint::Length(9),                     // IN/s
+        Constraint::Length(9),                     // OUT/s
+        Constraint::Length(TRAILING_SPACER_WIDTH), // 右余白 (シアン帯を右端まで伸ばす)
     ];
 
     let table = Table::new(body_rows, widths)
@@ -1443,6 +1452,9 @@ fn render_cache(f: &mut Frame<'_>, app: &App, area: Rect) {
     // 40 を Length 群に残す。1+6+5+5+5+9+9 = 40 でぴったり。
     // EXPIRED 列見出しは Length(5) のため `EXPIR` まで切れるが、値 (実用上は
     // 0..99999 の整数) は完全表示される。
+    // 他タブと違い末尾余白列を入れていない: 1+min10+6+5+5+5+min20+9+9 +
+    // column_spacing(8) = 78 = 80cols 端末の inner 幅にぴったり収まる構成で、
+    // 末尾列を足すと USED / OUT/s 値が truncate される (issue #152)。
     let widths = [
         Constraint::Length(1), // indicator
         Constraint::Min(10),   // ZONE
@@ -1518,6 +1530,7 @@ fn render_filter(f: &mut Frame<'_>, app: &App, area: Rect) {
         header_cell_with_sort("p95", 5, app.sort, theme),
         header_cell_with_sort("IN/s", 6, app.sort, theme),
         header_cell_with_sort("OUT/s", 7, app.sort, theme),
+        Cell::from(""),
     ])
     .style(theme.table_header.add_modifier(Modifier::UNDERLINED));
 
@@ -1559,6 +1572,7 @@ fn render_filter(f: &mut Frame<'_>, app: &App, area: Rect) {
                     &format_bps(r.bw_out_per_sec.round() as u64),
                     9,
                 )),
+                Cell::from(""),
             ])
         })
         .collect();
@@ -1573,6 +1587,7 @@ fn render_filter(f: &mut Frame<'_>, app: &App, area: Rect) {
         Constraint::Length(8),
         Constraint::Length(9),
         Constraint::Length(9),
+        Constraint::Length(TRAILING_SPACER_WIDTH), // 右余白
     ];
 
     let table = Table::new(body_rows, widths)
