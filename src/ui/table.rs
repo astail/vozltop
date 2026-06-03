@@ -60,7 +60,9 @@ use std::cmp::Ordering;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Cell, Padding, Paragraph, Row, Table, TableState,
+};
 use ratatui::Frame;
 
 use crate::model::{Responses, ServerZone, UpstreamServer, VtsStatus};
@@ -1021,6 +1023,10 @@ fn indicator_cell<'a>(is_cursor: bool, _is_alerting: bool, theme: &Theme) -> Cel
 
 /// table 全体を rounded box (mono: plain) で囲み、その内側 `Rect` を返す。
 /// 呼び出し側は inner に対して `render_stateful_widget` する。
+///
+/// `Padding::right(1)` で最終列 (OUT/s 等) と右枠線の間に 1 セル分の
+/// 余白を確保する (issue #152 ユーザフィードバック: 値が枠線に張り付いて
+/// 読みにくいため)。
 fn render_tab_box(f: &mut Frame<'_>, app: &App, area: Rect, title: String) -> Rect {
     let border_type = if app.theme.mono {
         BorderType::Plain
@@ -1031,6 +1037,7 @@ fn render_tab_box(f: &mut Frame<'_>, app: &App, area: Rect, title: String) -> Re
         .borders(Borders::ALL)
         .border_type(border_type)
         .border_style(app.theme.border)
+        .padding(Padding::right(1))
         .title(Span::styled(title, app.theme.title));
     let inner = block.inner(area);
     f.render_widget(block, area);

@@ -6,9 +6,9 @@
 //! ╭─ ● api.prod · up 3d 14h ─────────────────────────────────────╮
 //! │ Conn   active 42   reading 3   writing 5   waiting 4          │
 //! │ ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄ │
-//! │ RPS  1234/s                                  │  req  1.58 M   │
-//! │ IN   1.2 MB/s                                │  rx   1.50 GB  │
-//! │ OUT  4.5 MB/s                                │  tx   5.20 GB  │
+//! │ RPS  1234/s     │  req  1.58 M                                │
+//! │ IN   1.2 MB/s   │  rx   1.50 GB                               │
+//! │ OUT  4.5 MB/s   │  tx   5.20 GB                               │
 //! ╰───────────────────────────────────────────────────────────────╯
 //! ```
 //!
@@ -208,8 +208,8 @@ fn render_divider(f: &mut Frame<'_>, app: &App, area: Rect) {
 
 /// 1 つの metric 行 (RPS / IN / OUT) を描画する (issue #152 で bar 撤廃)。
 ///
-/// 横レイアウト: `[Length(5), Length(12), Fill(1), Length(3), Length(20)]`
-/// = ラベル / 現在値 / 余白 / `│` 区切り / 右内カラム (`req 1.58 M` 等)
+/// 横レイアウト: `[Length(5), Length(12), Length(3), Length(20), Fill(1)]`
+/// = ラベル / 現在値 / `│` 区切り / 右内カラム (`req 1.58 M` 等) / 余白
 ///
 /// `area.width` が狭くて右内カラムが入らない場合は右カラム + `│` を省略する。
 fn render_metric_row(
@@ -227,13 +227,16 @@ fn render_metric_row(
     const RIGHT_WIDTH: u16 = 20;
     let show_right_column = area.width >= LABEL_WIDTH + VALUE_WIDTH + SEP_WIDTH + RIGHT_WIDTH;
 
+    // 右内カラム (req/rx/tx) は value の直後に置く。バー撤廃後、Fill を
+    // value と右カラムの間に挟むと右カラムが端に張り付いて読みにくいので、
+    // 余白は最後の Fill にまとめる (issue #152 ユーザフィードバック)。
     let chunks = if show_right_column {
         Layout::horizontal([
             Constraint::Length(LABEL_WIDTH),
             Constraint::Length(VALUE_WIDTH),
-            Constraint::Fill(1),
             Constraint::Length(SEP_WIDTH),
             Constraint::Length(RIGHT_WIDTH),
+            Constraint::Fill(1),
         ])
         .split(area)
     } else {
@@ -267,7 +270,7 @@ fn render_metric_row(
         // separator `│`
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(" │ ", app.theme.separator))),
-            chunks[3],
+            chunks[2],
         );
         // right column: " {label}  {value}"
         f.render_widget(
@@ -277,7 +280,7 @@ fn render_metric_row(
                 Span::raw("  "),
                 Span::styled(total_value.to_string(), app.theme.header_value),
             ])),
-            chunks[4],
+            chunks[3],
         );
     }
 }
