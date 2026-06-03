@@ -1,4 +1,4 @@
-//! TUI 上段 7 行のヘッダ widget (issue #150)。
+//! TUI 上段 7 行のヘッダ widget (issue #150 / #152)。
 //!
 //! ## レイアウト
 //!
@@ -6,24 +6,22 @@
 //! ╭─ ● api.prod · up 3d 14h ─────────────────────────────────────╮
 //! │ Conn   active 42   reading 3   writing 5   waiting 4          │
 //! │ ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄ │
-//! │ RPS  ▉▉▉▉▉▉▉▉▉▉▉▍░░░░░  1234/s   │  req  1.58 M               │
-//! │ IN   ▉▉▉▉▍░░░░░░░░░░░░  1.2 MB/s │  rx   1.50 GB              │
-//! │ OUT  ▉▉▉▉▉▉▉▉▉▉▉▉▉▉▍░░  4.5 MB/s │  tx   5.20 GB              │
+//! │ RPS  1234/s     │  req  1.58 M                                │
+//! │ IN   1.2 MB/s   │  rx   1.50 GB                               │
+//! │ OUT  4.5 MB/s   │  tx   5.20 GB                               │
 //! ╰───────────────────────────────────────────────────────────────╯
 //! ```
 //!
-//! ## 設計判断 (issue #150)
+//! ## 設計判断
 //!
 //! - **ヘッダ全体を rounded box で囲む** (mono は plain): ratatui の `Block` を
 //!   1 つだけ使い、内側 5 行を `Layout::vertical` で分割する。
 //! - **タイトル行に ● ステータスドット + host + uptime を集約**: 旧
 //!   `render_status_banner` を廃止して状態をタイトルに統合。
-//! - **bar は 1/8 サブセル smooth fill** (`█▉▊▋▌▍▎▏░`): ratatui `Gauge` 相当の
-//!   なめらかさを `Paragraph` 上で実現。
+//! - **RPS / IN / OUT は数値のみ** (issue #152): 旧 smooth bar を撤廃。bar の分母
+//!   (sliding-window peak) も不要になったため `History` 側から peak helper も削除。
 //! - **Conn 行は絶対値表示のみ** (旧 Gauge 廃止): `rolling_max_active_conns` の
 //!   分母腐り問題を bar ごと撤廃して根本解決。
-//! - **RPS / IN/OUT bar の分母**: RPS は独立 60s sliding peak、IN/OUT は共通
-//!   `peak_bw` (per-sample `max(in, out)` の 60s 内最大) で正規化。
 //! - **右内カラム** (`│` 区切り) は累計値 (req / rx / tx)。Conn 行は full width。
 
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -36,10 +34,6 @@ use crate::state::{App, AppStatus};
 
 /// ヘッダの行数 (固定 7 行 = 上枠 1 + 内側 5 + 下枠 1)。
 pub const HEADER_HEIGHT: u16 = 7;
-
-/// 1/8 サブセル smooth bar のグリフ (1/8 〜 7/8)。
-/// 8/8 は `█` として独立扱い (full block で promote)。
-const EIGHTHS: [char; 7] = ['▏', '▎', '▍', '▌', '▋', '▊', '▉'];
 
 /// area を 1 つの rounded box で囲み、その内側に 5 行 (Conn / divider / RPS / IN / OUT)
 /// を描画する。
@@ -83,8 +77,6 @@ pub fn render(f: &mut Frame<'_>, app: &App, area: Rect, suppress_host_in_title: 
     render_conn_row(f, app, rows[0]);
     render_divider(f, app, rows[1]);
 
-    let peak_rps = app.history.peak_rps();
-    let peak_bw = app.history.peak_bw();
     let (rps_now, bw_in_now, bw_out_now) = app
         .history
         .latest()
@@ -95,35 +87,29 @@ pub fn render(f: &mut Frame<'_>, app: &App, area: Rect, suppress_host_in_title: 
     let total_rx = app.history.total_in_bytes();
     let total_tx = app.history.total_out_bytes();
 
-    render_bar_row(
+    render_metric_row(
         f,
         app,
         rows[2],
         "RPS",
-        rps_now,
-        peak_rps,
         &format!("{rps_now}/s"),
         "req",
         &format_count(total_req),
     );
-    render_bar_row(
+    render_metric_row(
         f,
         app,
         rows[3],
         "IN",
-        bw_in_now,
-        peak_bw,
         &format_bps(bw_in_now),
         "rx",
         &format_bytes(total_rx),
     );
-    render_bar_row(
+    render_metric_row(
         f,
         app,
         rows[4],
         "OUT",
-        bw_out_now,
-        peak_bw,
         &format_bps(bw_out_now),
         "tx",
         &format_bytes(total_tx),
@@ -220,21 +206,17 @@ fn render_divider(f: &mut Frame<'_>, app: &App, area: Rect) {
     );
 }
 
-/// 1 つの bar 行 (RPS / IN / OUT) を描画する。
+/// 1 つの metric 行 (RPS / IN / OUT) を描画する (issue #152 で bar 撤廃)。
 ///
-/// 横レイアウト: `[Length(5), Fill(1), Length(12), Length(3), Length(20)]`
-/// = ラベル / bar / 現在値 / `│` 区切り / 右内カラム (`req 1.58 M` 等)
+/// 横レイアウト: `[Length(5), Length(12), Length(3), Length(20), Fill(1)]`
+/// = ラベル / 現在値 / `│` 区切り / 右内カラム (`req 1.58 M` 等) / 余白
 ///
-/// `area.width` が狭くて右内カラムが入らない場合は右カラム + `│` を省略し、
-/// bar 領域を Fill(1) に伸ばす (`area.width < 5 + 12 + 3 + RIGHT_BUDGET + 2`)。
-#[allow(clippy::too_many_arguments)]
-fn render_bar_row(
+/// `area.width` が狭くて右内カラムが入らない場合は右カラム + `│` を省略する。
+fn render_metric_row(
     f: &mut Frame<'_>,
     app: &App,
     area: Rect,
     label: &str,
-    current: u64,
-    peak: u64,
     value_text: &str,
     total_label: &str,
     total_value: &str,
@@ -243,24 +225,25 @@ fn render_bar_row(
     const VALUE_WIDTH: u16 = 12;
     const SEP_WIDTH: u16 = 3;
     const RIGHT_WIDTH: u16 = 20;
-    const MIN_BAR: u16 = 8;
-    let show_right_column =
-        area.width >= LABEL_WIDTH + MIN_BAR + VALUE_WIDTH + SEP_WIDTH + RIGHT_WIDTH;
+    let show_right_column = area.width >= LABEL_WIDTH + VALUE_WIDTH + SEP_WIDTH + RIGHT_WIDTH;
 
+    // 右内カラム (req/rx/tx) は value の直後に置く。バー撤廃後、Fill を
+    // value と右カラムの間に挟むと右カラムが端に張り付いて読みにくいので、
+    // 余白は最後の Fill にまとめる (issue #152 ユーザフィードバック)。
     let chunks = if show_right_column {
         Layout::horizontal([
             Constraint::Length(LABEL_WIDTH),
-            Constraint::Fill(1),
             Constraint::Length(VALUE_WIDTH),
             Constraint::Length(SEP_WIDTH),
             Constraint::Length(RIGHT_WIDTH),
+            Constraint::Fill(1),
         ])
         .split(area)
     } else {
         Layout::horizontal([
             Constraint::Length(LABEL_WIDTH),
-            Constraint::Fill(1),
             Constraint::Length(VALUE_WIDTH),
+            Constraint::Fill(1),
         ])
         .split(area)
     };
@@ -274,32 +257,20 @@ fn render_bar_row(
         chunks[0],
     );
 
-    // bar
-    let bar_area = chunks[1];
-    let bar_width = bar_area.width;
-    let (filled, empty) = smooth_bar(bar_width, current, peak);
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(filled, app.theme.bar_filled),
-            Span::styled(empty, app.theme.bar_empty),
-        ])),
-        bar_area,
-    );
-
     // value
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw(" "),
             Span::styled(value_text.to_string(), app.theme.header_value),
         ])),
-        chunks[2],
+        chunks[1],
     );
 
     if show_right_column {
         // separator `│`
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(" │ ", app.theme.separator))),
-            chunks[3],
+            chunks[2],
         );
         // right column: " {label}  {value}"
         f.render_widget(
@@ -309,46 +280,12 @@ fn render_bar_row(
                 Span::raw("  "),
                 Span::styled(total_value.to_string(), app.theme.header_value),
             ])),
-            chunks[4],
+            chunks[3],
         );
     }
 }
 
 // ---------- フォーマッタ ----------
-
-/// `current` / `peak` を `width` cells の 1/8 サブセル smooth bar に整形する。
-/// 戻り値は `(filled, empty)` の 2 文字列。連結すると `width` cells になる。
-fn smooth_bar(width: u16, current: u64, peak: u64) -> (String, String) {
-    if width == 0 {
-        return (String::new(), String::new());
-    }
-    let ratio = if peak == 0 {
-        0.0
-    } else {
-        (current as f64 / peak as f64).clamp(0.0, 1.0)
-    };
-    let total_eighths = width as u32 * 8;
-    let filled_eighths = ((ratio * width as f64 * 8.0).round() as u32).min(total_eighths);
-    let full = (filled_eighths / 8) as u16;
-    let partial = (filled_eighths % 8) as usize;
-
-    let mut filled = String::with_capacity((full as usize + 1) * 3);
-    for _ in 0..full {
-        filled.push('█');
-    }
-    let used_partial = if full < width && partial > 0 {
-        filled.push(EIGHTHS[partial - 1]);
-        1
-    } else {
-        0
-    };
-    let empty_cells = width.saturating_sub(full + used_partial);
-    let mut empty = String::with_capacity(empty_cells as usize * 3);
-    for _ in 0..empty_cells {
-        empty.push('░');
-    }
-    (filled, empty)
-}
 
 /// uptime ミリ秒を `3d 14h` / `4h 22m` / `45m 12s` に整形する。
 pub(crate) fn format_uptime(ms: u64) -> String {
@@ -554,44 +491,6 @@ mod tests {
         assert_eq!(format_bps(1024 * 1024), "1.0 MB/s");
     }
 
-    // ---------- smooth_bar ----------
-
-    #[test]
-    fn smooth_bar_empty_when_peak_zero() {
-        let (f, e) = smooth_bar(10, 100, 0);
-        assert_eq!(f, "");
-        assert_eq!(e, "░░░░░░░░░░");
-    }
-
-    #[test]
-    fn smooth_bar_full_when_current_equals_peak() {
-        let (f, e) = smooth_bar(10, 100, 100);
-        assert_eq!(f, "██████████");
-        assert_eq!(e, "");
-    }
-
-    #[test]
-    fn smooth_bar_half_uses_full_blocks() {
-        let (f, e) = smooth_bar(10, 50, 100);
-        assert_eq!(f, "█████");
-        assert_eq!(e, "░░░░░");
-    }
-
-    #[test]
-    fn smooth_bar_partial_uses_subcell() {
-        let (f, e) = smooth_bar(10, 45, 100);
-        assert!(f.starts_with("████"));
-        assert_eq!(f.chars().count(), 5, "4 full + 1 partial");
-        assert_eq!(e.chars().count(), 5);
-    }
-
-    #[test]
-    fn smooth_bar_width_zero_returns_empty() {
-        let (f, e) = smooth_bar(0, 1, 1);
-        assert_eq!(f, "");
-        assert_eq!(e, "");
-    }
-
     // ---------- header 描画 ----------
 
     #[test]
@@ -616,12 +515,26 @@ mod tests {
     }
 
     #[test]
-    fn header_renders_three_bar_labels() {
+    fn header_renders_three_metric_labels() {
         let app = App::new();
         let out = draw(&app, 80, HEADER_HEIGHT);
         assert!(out.contains("RPS"), "out:\n{out}");
         assert!(out.contains("IN"), "out:\n{out}");
         assert!(out.contains("OUT"), "out:\n{out}");
+    }
+
+    #[test]
+    fn header_does_not_render_smooth_bar_glyphs() {
+        // issue #152: RPS / IN / OUT 行から smooth bar (`█▉▊▋▌▍▎▏░`) を撤去。
+        let mut app = App::new();
+        app.history.push(snapshot_with_conns(1000, 1, 0, 1, 0));
+        let out = draw(&app, 80, HEADER_HEIGHT);
+        for ch in ['█', '▉', '▊', '▋', '▌', '▍', '▎', '▏', '░'] {
+            assert!(
+                !out.contains(ch),
+                "smooth bar glyph {ch:?} should not appear:\n{out}"
+            );
+        }
     }
 
     #[test]
@@ -673,7 +586,7 @@ mod tests {
     }
 
     #[test]
-    fn header_renders_pipe_separator_in_bar_rows() {
+    fn header_renders_pipe_separator_in_metric_rows() {
         let mut app = App::new();
         app.history.push(snapshot_with_conns(1000, 1, 0, 1, 0));
         let out = draw(&app, 80, HEADER_HEIGHT);

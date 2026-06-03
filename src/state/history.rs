@@ -1,32 +1,21 @@
 //! 直近 120 件の `VtsStatus` snapshot を rolling buffer で保持する `History`、
-//! および sliding-window peak / 累計値 helper。
+//! および累計値 helper。
 //!
 //! issue #20 で型と push の口を整備し、issue #21 で `DerivedSnapshot` の実体を
 //! `state::derived` に切り出した。issue #150 でヘッダの sparkline / Gauge を
 //! 廃止し、`rps_history` / `bw_*_history` / `rolling_max_active_conns` /
-//! `push_derived` を全削除。代わりに 60s sliding-window peak (`peak_rps` /
-//! `peak_bw`) と累計値 (`total_*` / `uptime_ms`) を提供する。
+//! `push_derived` を全削除。issue #152 でヘッダ RPS/IN/OUT bar を撤廃したのに
+//! 伴い、bar 分母用だった 60s sliding-window peak (`peak_rps` / `peak_bw`) も削除。
+//! 現在は累計値 (`total_*` / `uptime_ms`) のみ提供する。
 
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::model::VtsStatus;
 use crate::state::derived::DerivedSnapshot;
 
 /// rolling buffer の最大長。1 秒間隔で 120 サンプル ≒ 2 分の履歴。
 pub const HISTORY_CAPACITY: usize = 120;
-
-/// peak 計算の wall-clock window 長 (issue #150)。
-///
-/// `--interval ≥ 0.5s` で 60s 全体を `HISTORY_CAPACITY (=120)` 内に収められる。
-/// 極端に短い interval (< 0.5s) では window 末尾が clip されるが、interval を
-/// 変えても peak の追従挙動が wall-clock 60s で一定であることを優先する。
-pub const PEAK_WINDOW: Duration = Duration::from_secs(60);
-
-/// `peak_rps` の最低値 (= 無負荷時に bar が 100% に張り付くのを防ぐ floor)。
-const RPS_FLOOR: u64 = 1;
-/// `peak_bw` の最低値 (= 同上、bytes/s)。
-const BW_FLOOR: u64 = 1024;
 
 /// 1 tick ぶんの観測値。
 #[derive(Debug, Clone)]
@@ -118,57 +107,6 @@ impl History {
         self.nginx_restart_detected = false;
     }
 
-    // ---------- issue #150: sliding-window peak ----------
-
-    /// 直近 `PEAK_WINDOW` (60s) の RPS peak。floor = `RPS_FLOOR` (=1)。
-    ///
-    /// 走査基点は `latest.at` (= fetch 失敗中に古い peak が伸び続けないため、
-    /// `Instant::now()` 基点ではなく)。snapshot ごとに
-    /// `s.derived.server_totals().0` を見る。
-    pub fn peak_rps(&self) -> u64 {
-        self.window_max(|s| s.derived.server_totals().0, RPS_FLOOR)
-    }
-
-    /// 直近 `PEAK_WINDOW` の bandwidth peak (bytes/s)。floor = `BW_FLOOR` (=1024)。
-    ///
-    /// IN/OUT 共通の分母として使う。per-sample で `max(bw_in, bw_out)` を取り
-    /// その上で window 内の max を返す (数学的に
-    /// `max(max_t(in_t), max_t(out_t)) == max_t(max(in_t, out_t))`)。
-    pub fn peak_bw(&self) -> u64 {
-        self.window_max(
-            |s| {
-                let (_, i, o) = s.derived.server_totals();
-                i.max(o)
-            },
-            BW_FLOOR,
-        )
-    }
-
-    /// 共通 helper: latest から `PEAK_WINDOW` 内の sample に対して `pick` を適用
-    /// した最大値を返す。空 history は `floor`。
-    fn window_max<F>(&self, pick: F, floor: u64) -> u64
-    where
-        F: Fn(&Snapshot) -> u64,
-    {
-        let Some(latest_at) = self.last_at() else {
-            return floor;
-        };
-        let cutoff = latest_at.checked_sub(PEAK_WINDOW);
-        let mut best = 0u64;
-        for s in self.snapshots.iter().rev() {
-            if let Some(c) = cutoff {
-                if s.at < c {
-                    break;
-                }
-            }
-            let v = pick(s);
-            if v > best {
-                best = v;
-            }
-        }
-        best.max(floor)
-    }
-
     // ---------- issue #150: 累計値 helper ----------
 
     /// 累計リクエスト数。`connections.requests` (nginx コアの累積) を使う。
@@ -233,7 +171,6 @@ impl History {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::derived::{ServerDerived, StatusRatios, ZoneRates};
 
     fn snapshot(now_msec: u64, active_conns: u64) -> Snapshot {
         let raw = serde_json::json!({
@@ -249,37 +186,6 @@ mod tests {
             at: Instant::now(),
             status,
             derived: DerivedSnapshot::default(),
-        }
-    }
-
-    /// 任意の `at` / RPS / IN / OUT を持つ Snapshot を作る (peak テスト用)。
-    fn snapshot_at(at: Instant, rps: u64, bw_in: u64, bw_out: u64) -> Snapshot {
-        let raw = serde_json::json!({
-            "hostName": "h", "nginxVersion": "1", "moduleVersion": "v",
-            "loadMsec": 0u64, "nowMsec": 0u64,
-            "connections": {
-                "active": 0, "reading": 0, "writing": 0,
-                "waiting": 0, "accepted": 0, "handled": 0, "requests": 0
-            },
-        });
-        let status: VtsStatus = serde_json::from_value(raw).unwrap();
-        let mut derived = DerivedSnapshot::default();
-        // server_totals() が `*` を優先するので、`*` zone に値を直接入れる
-        derived.server.insert(
-            "*".to_string(),
-            ServerDerived {
-                rates: ZoneRates {
-                    rps: rps as f64,
-                    bw_in_per_sec: bw_in as f64,
-                    bw_out_per_sec: bw_out as f64,
-                },
-                ratios: StatusRatios::default(),
-            },
-        );
-        Snapshot {
-            at,
-            status,
-            derived,
         }
     }
 
@@ -370,60 +276,6 @@ mod tests {
         assert!(h.last_at().is_none());
         h.push(snapshot(1000, 0));
         assert!(h.last_at().is_some());
-    }
-
-    // ---------- issue #150: peak ----------
-
-    #[test]
-    fn peak_returns_floor_when_history_empty() {
-        let h = History::new();
-        assert_eq!(h.peak_rps(), RPS_FLOOR);
-        assert_eq!(h.peak_bw(), BW_FLOOR);
-    }
-
-    #[test]
-    fn peak_returns_floor_when_all_samples_below_floor() {
-        let mut h = History::new();
-        let t0 = Instant::now();
-        h.push(snapshot_at(t0, 0, 0, 0));
-        assert_eq!(h.peak_rps(), RPS_FLOOR, "floor when all samples are 0");
-        assert_eq!(h.peak_bw(), BW_FLOOR);
-    }
-
-    #[test]
-    fn peak_rps_excludes_samples_older_than_window() {
-        let mut h = History::new();
-        let now = Instant::now();
-        // 70s 前の大きい値 (window 外)
-        h.push(snapshot_at(now - Duration::from_secs(70), 5000, 0, 0));
-        // 30s 前の中程度 (window 内)
-        h.push(snapshot_at(now - Duration::from_secs(30), 800, 0, 0));
-        // 直近 (window 内)
-        h.push(snapshot_at(now, 200, 0, 0));
-        assert_eq!(h.peak_rps(), 800, "older than 60s must be excluded");
-    }
-
-    #[test]
-    fn peak_bw_uses_per_sample_max_of_in_and_out() {
-        let mut h = History::new();
-        let now = Instant::now();
-        // sample1: IN=1000, OUT=5000 → per-sample max = 5000
-        h.push(snapshot_at(now - Duration::from_secs(10), 0, 1000, 5000));
-        // sample2: IN=6000, OUT=2000 → per-sample max = 6000
-        h.push(snapshot_at(now, 0, 6000, 2000));
-        // 値が BW_FLOOR (1024) より十分大きいので floor で潰れない
-        assert_eq!(h.peak_bw(), 6000, "per-sample max(in, out) で集計");
-    }
-
-    #[test]
-    fn peak_unaffected_by_nginx_restart_marker() {
-        // restart 前後の sample がどちらも max 候補になること (peak は
-        // nowMsec の単調性ではなく Snapshot.at の wall-clock で判定するため)。
-        let mut h = History::new();
-        let now = Instant::now();
-        h.push(snapshot_at(now - Duration::from_secs(10), 1000, 0, 0));
-        h.push(snapshot_at(now, 300, 0, 0));
-        assert_eq!(h.peak_rps(), 1000);
     }
 
     // ---------- issue #150: 累計 ----------

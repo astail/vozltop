@@ -412,8 +412,8 @@ impl App {
     /// - `error_banner` をクリア
     ///
     /// issue #150: ヘッダの sparkline / Gauge を廃止したため、旧 `push_derived`
-    /// 経由の集計値バッファ更新は不要。peak は `History::peak_rps` /
-    /// `History::peak_bw` が `snapshots` 上を毎回走査して算出する。
+    /// 経由の集計値バッファ更新は不要。issue #152 で RPS/IN/OUT bar を撤廃し、
+    /// sliding-window peak helper も廃止 (`server_totals()` の瞬間値のみ表示)。
     pub fn on_fetch_ok(&mut self, status: VtsStatus) {
         // `latest()` は push 前なので「prev (= 前 snapshot)」を返す。初 tick は None。
         let derived = self
@@ -990,7 +990,7 @@ mod tests {
         // Snapshot.derived も DerivedSnapshot::default() で固定化されたままに
         // ならない (issue #105 で sparkline が空だった本質バグの回帰防止)。
         // issue #150 で sparkline は削除されたが、Snapshot.derived 自体は
-        // peak_rps / peak_bw が読むので埋まる必要がある。
+        // header の RPS/IN/OUT 数値表示 (`server_totals`) が読むので埋まる必要がある。
         let mut app = App::new();
         app.on_fetch_ok(status_with_one_zone(1_000, 0, 0, 0));
         app.on_fetch_ok(status_with_one_zone(2_000, 200, 0, 0));
