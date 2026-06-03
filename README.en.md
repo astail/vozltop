@@ -13,25 +13,28 @@
 nginx-module-vts publishes per-vhost / upstream / cache traffic statistics as JSON. `vozltop` is a TUI that lets you watch those stats `htop`-style — **a single binary that launches instantly, supports sort/filter out of the box, and works over ssh.**
 
 ```
-┌─ vozltop ──────────────────────────────────────────────────────────────────┐
-│ Conn █████░░░░░░░░░░░░░░░ 42/120  active 42 reading 3 writing 5 waiting 34 │
-│ RPS  ▁▂▃▅▇▇▆▄▂▁                                                1284/s      │
-│ in   ▁▂▃▅▇▆▄▂▁                                              12.4 MB/s      │
-│ out  ▁▂▃▅▇▆▄▂▁                                              84.0 MB/s      │
-├────────────────────────────────────────────────────────────────────────────┤
-│ [Server] Upstream  Cache                                                   │
-├────────────────────────────────────────────────────────────────────────────┤
-│ ZONE             RPS    2xx   4xx  5xx  p95    IN/s   OUT/s                │
-│ api.example.com  842   99.1% 0.7% 0.2% 38ms   3 MB   24 MB                 │
-│ www.example.com  321   99.8% 0.1% 0.1% 12ms   5 MB   41 MB                 │
-├────────────────────────────────────────────────────────────────────────────┤
-│ F1Help F4Filter F5Sort F10Quit  Tab:NextZone Enter:Detail                  │
-└────────────────────────────────────────────────────────────────────────────┘
+╭ ● api.prod · up 3d 14h ──────────────────────────────────────────────────────╮
+│ Conn   active 42  reading 3  writing 5  waiting 34                           │
+│┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄│
+│ RPS  1284/s      │  req  1.58 M                                              │
+│ IN   12.4 MB/s   │  rx   1.50 GB                                             │
+│ OUT  84.0 MB/s   │  tx   5.20 GB                                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭ Server Zones · 2 ────────────────────────────────────────────────────────────╮
+│  ZONE               RPS↓   2xx%   4xx%   5xx%      p95      IN/s     OUT/s   │
+│▶ api.example.com     842 100.0%   0.0%   0.0%     38ms  3.0 MB/s 24.0 MB/s   │
+│  www.example.com     321 100.0%   0.0%   0.0%     12ms  5.0 MB/s 41.0 MB/s   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+F1Help F4Filter F5Sort F10Quit  Tab:Zone Enter:Detail
 ```
 
-- Row 1 `Conn`: nginx connection state. The gauge is `active / rolling-max since launch` (auto-scales because `worker_connections` is not in the VTS JSON).
-- Row 2 `RPS`: sparkline (rolling 120 ticks) + current value.
-- Rows 3 / 4 `in` / `out`: bandwidth sparklines (full width each) + current values.
+- **Header title**: `● {status} · {host} · up {uptime}`. The status dot (`●`) color reflects the connection state (green = Running, yellow = Stale or Connecting, red = Disconnected). When Stale / Disconnected, the consecutive failure count `(N)` is appended.
+- **Conn row**: absolute breakdown of nginx connection state (`active / reading / writing / waiting`). No gauge / bar — `worker_connections` is not exposed by VTS JSON, so there is nothing meaningful to normalize against.
+- **RPS / IN / OUT rows**: the current value (RPS as `N/s`, IN/OUT in B/s..MB/s) followed by a `│` separator and a cumulative counter (`req` count / `rx` / `tx` bytes). The layout is bar-less: just the numbers stacked vertically.
+- **Table**: a rounded box (plain in mono) titled `{TabName} · {visible} [/ {total}] [· filter "q"]`. The active sort column shows `↓` / `↑` in its header, and the selected row gets a `▶` (mono: `>`) cursor glyph. Numeric columns are right-aligned in both the header and the body.
+- **Alerting**: when `--alert-p95-ms` is set and a row's p95 reaches the threshold, just that p95 cell is colored red-inverse. In multi-host mode an additional `⚠` badge appears next to the host name in the host tab bar.
+
+Non-zero `5xx%` cells are colored red. When colors are disabled, all of the above degrade to text fallbacks like `[!]` / `(!)`.
 
 ## Install
 
@@ -111,9 +114,21 @@ vozltop https://nginx.example.com/status/format/json \
   --header 'Authorization: Bearer eyJ...'
 ```
 
+p95 alert (paints the p95 cell of any row at/above the threshold red-inverse + bell):
+
+```bash
+vozltop http://localhost/status/format/json --alert-p95-ms 500
+```
+
 ### Multi-host monitoring
 
-You can watch multiple nginx-vts instances at once. Pass two or more URLs and vozltop starts in multi-host mode, showing a Host tab bar at the top.
+You can watch multiple nginx-vts instances at once. Pass two or more URLs and vozltop starts in multi-host mode, with a single-line Host tab bar at the very top of the screen.
+
+```
+HOST  [web-prod-1]  web-prod-2  edge-tokyo  api-asia⚠
+```
+
+The active host is surrounded by `[...]`, and any host whose p95 alert is firing gets a `⚠` (mono: `(!)`) badge — so you can spot trouble on another host without switching to it.
 
 ```bash
 vozltop http://web-prod-1/status/format/json \
@@ -212,19 +227,42 @@ vozltop http://localhost/status/format/json --no-color
 NO_COLOR=1 vozltop http://localhost/status/format/json
 ```
 
+### Zone tabs
+
+Switch with `Tab` / `Shift+Tab`. The order is `Server → Upstream → Cache → Filter → Server …`.
+
+| Tab | Columns | Source |
+|-----|---------|--------|
+| Server Zones | ZONE / RPS / 2xx% / 4xx% / 5xx% / p95 / IN/s / OUT/s | `serverZones` |
+| Upstream Servers | same + STATE (up/backup/down) | `upstreamZones` expanded to 1 row per server (`ZONE` column = `group/host:port`) |
+| Cache Zones | ZONE / HIT% / MISS / EXPIRED / STALE / USED / IN/s / OUT/s | `cacheZones` |
+| Filter Zones | ZONE (`group/key`) / RPS / 2xx% / 4xx% / 5xx% / p95 / IN/s / OUT/s | `filterZones` |
+
+Press `Enter` to open the detail overlay for the selected zone. It has three sections:
+
+1. **Top**: p50 / p95 / p99 (or `Average request_msec only: ~Nms` when histogram buckets aren't configured).
+2. **Middle**: per-bucket latency breakdown for the last tick. Each bucket is rendered as **one row of text** (`<= 5ms  120  35%` — label / count / share of total). There are no bars; the layout is a plain table.
+3. **Bottom**: response-class breakdown (`1xx 0  2xx 3008  3xx 0  4xx 0  5xx 0`). On the Cache tab this becomes `hit / miss / bypass / expired / stale / ...`.
+
+> The `EXPIRED` column on the Cache tab is drawn at width 5 and right-aligned, so it appears on screen as `PIRED` (the logical column name is still `EXPIRED`).
+
 ### Key bindings
 
 | Key | Action |
 |-----|--------|
-| Tab / Shift+Tab | Switch zone type |
+| Tab / Shift+Tab | Switch zone type (Server / Upstream / Cache / Filter) |
 | ↑ ↓ / k j | Move row cursor |
-| Enter | Detail overlay |
-| Esc | Close detail / clear filter |
-| F1 | Help |
-| F4 / `/` | Filter zones by name |
+| PgUp / PgDn | Page up / down |
+| Enter | Open detail overlay / close it if already open |
+| Esc | Close detail / clear filter / close help |
+| F1 / `?` | Help |
+| F4 / `/` | Filter zones by substring (case-insensitive) |
 | F5 | Reverse sort direction |
-| 1-9 | Select sort column |
+| 1-9 | Select sort column (per-tab column list) |
+| `[` / `]` (Shift+H / Shift+L) | Switch host (multi-host only) |
 | F10 / q / Ctrl-C | Quit |
+
+macOS Terminal.app intercepts F1-F4, so the letter aliases `?` (= F1), `/` (= F4), and `q` (= F10) are provided as fallbacks.
 
 ## nginx configuration example
 
@@ -275,7 +313,7 @@ cargo run -- http://localhost:8080/status/format/json --interval 0.5
 
 ## Roadmap
 
-See `docs/ROADMAP.md`. Multi-host monitoring, resets via `/status/control`, TOML config files, etc. are planned for Phase 2.
+See `docs/ROADMAP.md`. Multi-host monitoring, TOML config files, and the `filterZones` view have already shipped. Remaining Phase 2 candidates include resets via `/status/control`, upstream group-aggregation rows, and keyring integration.
 
 ## Security
 

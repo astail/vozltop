@@ -13,25 +13,28 @@
 nginx-module-vts は nginx の vhost / upstream / cache 単位のトラフィック統計を JSON で公開してくれる。`vozltop` はそれを `htop` のように **1 バイナリで起動・即ソート / フィルタ可能・ssh 越しに動く** TUI で眺めるためのツール。
 
 ```
-┌─ vozltop ──────────────────────────────────────────────────────────────────┐
-│ Conn █████░░░░░░░░░░░░░░░ 42/120  active 42 reading 3 writing 5 waiting 34 │
-│ RPS  ▁▂▃▅▇▇▆▄▂▁                                                1284/s      │
-│ in   ▁▂▃▅▇▆▄▂▁                                              12.4 MB/s      │
-│ out  ▁▂▃▅▇▆▄▂▁                                              84.0 MB/s      │
-├────────────────────────────────────────────────────────────────────────────┤
-│ [Server] Upstream  Cache                                                   │
-├────────────────────────────────────────────────────────────────────────────┤
-│ ZONE             RPS    2xx   4xx  5xx  p95    IN/s   OUT/s                │
-│ api.example.com  842   99.1% 0.7% 0.2% 38ms   3 MB   24 MB                 │
-│ www.example.com  321   99.8% 0.1% 0.1% 12ms   5 MB   41 MB                 │
-├────────────────────────────────────────────────────────────────────────────┤
-│ F1Help F4Filter F5Sort F10Quit  Tab:NextZone Enter:Detail                  │
-└────────────────────────────────────────────────────────────────────────────┘
+╭ ● api.prod · up 3d 14h ──────────────────────────────────────────────────────╮
+│ Conn   active 42  reading 3  writing 5  waiting 34                           │
+│┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄│
+│ RPS  1284/s      │  req  1.58 M                                              │
+│ IN   12.4 MB/s   │  rx   1.50 GB                                             │
+│ OUT  84.0 MB/s   │  tx   5.20 GB                                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭ Server Zones · 2 ────────────────────────────────────────────────────────────╮
+│  ZONE               RPS↓   2xx%   4xx%   5xx%      p95      IN/s     OUT/s   │
+│▶ api.example.com     842 100.0%   0.0%   0.0%     38ms  3.0 MB/s 24.0 MB/s   │
+│  www.example.com     321 100.0%   0.0%   0.0%     12ms  5.0 MB/s 41.0 MB/s   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+F1Help F4Filter F5Sort F10Quit  Tab:Zone Enter:Detail
 ```
 
-- 1 行目 `Conn`: nginx 接続状況。Gauge は `active / 起動以降の rolling-max` (worker_connections は VTS JSON に含まれないため auto-scale)
-- 2 行目 `RPS`: Sparkline (rolling 120 tick) + 現値
-- 3 行目 `in` / 4 行目 `out`: 入出力帯域の Sparkline (それぞれフル幅) + 現値
+- **ヘッダタイトル**: `● {status} · {host} · up {uptime}`。ステータスドット (`●`) の色で接続状態を示す (緑=Running / 黄=Stale or Connecting / 赤=Disconnected)。Stale / Disconnected のときは連続失敗回数 `(N)` も付く
+- **Conn 行**: nginx 接続状況の絶対値ブレイクダウン (`active / reading / writing / waiting`)。worker_connections は VTS JSON に含まれないので gauge / bar は出さない
+- **RPS / IN / OUT 行**: 現在値 (RPS は `N/s`、IN / OUT は B/s〜MB/s 等) + `│` 区切り + 累計 (`req` 件数 / `rx` / `tx` バイト数)。値そのものを縦に並べる素朴なレイアウト (bar は持たない)
+- **テーブル**: rounded box (mono は plain) の中に `Tab名 · 表示件数 [/ 総件数] [· filter "q"]` のタイトル。ソート中の列見出しに `↓` / `↑`、選択カーソル行に `▶` (mono: `>`) が付く。数値列はヘッダ・値とも右寄せで揃う
+- **アラート**: `--alert-p95-ms` が指定されていて p95 がしきい値以上のとき、その p95 セルだけ赤反転で着色される。multi-host 時は host タブの host 名にも `⚠` バッジが出る
+
+`5xx%` が非ゼロのセルは赤系で着色される。色を切ったときは `[!]` / `(!)` 等のテキストフォールバックに変わる。
 
 ## インストール
 
@@ -111,9 +114,21 @@ vozltop https://nginx.example.com/status/format/json \
   --header 'Authorization: Bearer eyJ...'
 ```
 
+p95 アラート (しきい値以上の zone の p95 セルを赤反転 + ベル):
+
+```bash
+vozltop http://localhost/status/format/json --alert-p95-ms 500
+```
+
 ### Multi-host 監視
 
-複数の nginx-vts インスタンスを同時に監視できます。URL を 2 つ以上渡すと multi-host モードで起動し、上段に Host タブバーが出ます。
+複数の nginx-vts インスタンスを同時に監視できます。URL を 2 つ以上渡すと multi-host モードで起動し、画面最上段に 1 行の Host タブバーが出ます。
+
+```
+HOST  [web-prod-1]  web-prod-2  edge-tokyo  api-asia⚠
+```
+
+active host は `[...]` で囲まれ、p95 などのアラートが立っている host には `⚠` (mono: `(!)`) が付くため、他 host のヘルスもタブを切り替えずに気付けます。
 
 ```bash
 vozltop http://web-prod-1/status/format/json \
@@ -212,19 +227,42 @@ vozltop http://localhost/status/format/json --no-color
 NO_COLOR=1 vozltop http://localhost/status/format/json
 ```
 
+### Zone タブ
+
+`Tab` / `Shift+Tab` で切り替え。順は `Server → Upstream → Cache → Filter → Server …`。
+
+| タブ | 列構成 | 表示元 |
+|------|--------|--------|
+| Server Zones | ZONE / RPS / 2xx% / 4xx% / 5xx% / p95 / IN/s / OUT/s | `serverZones` |
+| Upstream Servers | 上記 + STATE (up/backup/down) | `upstreamZones` を 1 server = 1 行に展開 (`ZONE` 列は `group/host:port`) |
+| Cache Zones | ZONE / HIT% / MISS / EXPIRED / STALE / USED / IN/s / OUT/s | `cacheZones` |
+| Filter Zones | ZONE (`group/key`) / RPS / 2xx% / 4xx% / 5xx% / p95 / IN/s / OUT/s | `filterZones` |
+
+`Enter` で選択 zone の詳細オーバーレイが開く。中身は 3 段:
+
+1. **上段**: p50 / p95 / p99 の数値 (histogram 未設定 zone は `Average request_msec only: ~Nms`)
+2. **中段**: 1 tick 分の bucket 別レイテンシ分布。`<= 5ms  120  35%` のように **1 行 = 1 bucket のテキスト表** (`label / count / 占有率`) で並ぶ (bar 描画は持たない)
+3. **下段**: responses の内訳 (`1xx 0  2xx 3008  3xx 0  4xx 0  5xx 0`)。Cache タブでは `hit / miss / bypass / expired / stale / ...`
+
+> Cache タブの `EXPIRED` 列は表示幅 (5 cells) + 右寄せの都合で実画面上は `PIRED` と表示されます (論理列名は `EXPIRED`)。
+
 ### キー割り当て
 
 | キー | 動作 |
 |------|------|
-| Tab / Shift+Tab | zone 種別切替 |
+| Tab / Shift+Tab | zone 種別切替 (Server / Upstream / Cache / Filter) |
 | ↑ ↓ / k j | 行カーソル移動 |
+| PgUp / PgDn | ページ送り |
 | Enter | 詳細オーバーレイを開く / 表示中は閉じる |
-| Esc | 詳細 / フィルタ解除 |
-| F1 | ヘルプ |
-| F4 / `/` | zone 名フィルタ |
+| Esc | 詳細 / フィルタ / ヘルプを閉じる |
+| F1 / `?` | ヘルプ |
+| F4 / `/` | zone 名フィルタ (大文字小文字無視の substring 一致) |
 | F5 | ソート方向反転 |
-| 1-9 | ソート列指定 |
+| 1-9 | ソート列指定 (タブごとに列構成が異なる) |
+| `[` / `]` (Shift+H / Shift+L) | host 切替 (multi-host のみ) |
 | F10 / q / Ctrl-C | 終了 |
+
+macOS Terminal.app は F1-F4 を OS 側で奪うため、`?` (= F1) / `/` (= F4) / `q` (= F10) の letter alias を用意している。
 
 ## nginx 側設定例
 
@@ -275,7 +313,7 @@ cargo run -- http://localhost:8080/status/format/json --interval 0.5
 
 ## ロードマップ
 
-`docs/ROADMAP.md` 参照。マルチホスト監視、`/status/control` 経由のリセット、TOML 設定ファイル等を Phase 2 で予定。
+`docs/ROADMAP.md` 参照。マルチホスト監視 / TOML 設定ファイル / `filterZones` ビューは既に出荷済み。残りの Phase 2 候補としては `/status/control` 経由のリセット、Upstream の group 集約行、keyring 連携等。
 
 ## セキュリティ
 
