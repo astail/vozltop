@@ -238,7 +238,13 @@ Switch with `Tab` / `Shift+Tab`. The order is `Server → Upstream → Cache →
 | Cache Zones | ZONE / HIT% / MISS / EXPIRED / STALE / USED / IN/s / OUT/s | `cacheZones` |
 | Filter Zones | ZONE (`group/key`) / RPS / 2xx% / 4xx% / 5xx% / p95 / IN/s / OUT/s | `filterZones` |
 
-Press `Enter` to open the detail overlay for the selected zone (p50 / p95 / p99, the per-bucket histogram for the last tick, and the breakdown of response counts).
+Press `Enter` to open the detail overlay for the selected zone. It has three sections:
+
+1. **Top**: p50 / p95 / p99 (or `Average request_msec only: ~Nms` when histogram buckets aren't configured).
+2. **Middle**: per-bucket latency breakdown for the last tick. Each bucket is rendered as **one row of text** (`<= 5ms  120  35%` — label / count / share of total). There are no bars; the layout is a plain table.
+3. **Bottom**: response-class breakdown (`1xx 0  2xx 3008  3xx 0  4xx 0  5xx 0`). On the Cache tab this becomes `hit / miss / bypass / expired / stale / ...`.
+
+> The `EXPIRED` column on the Cache tab is drawn at width 5 and right-aligned, so it appears on screen as `PIRED` (the logical column name is still `EXPIRED`).
 
 ### Key bindings
 

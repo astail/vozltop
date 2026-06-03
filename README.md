@@ -238,7 +238,13 @@ NO_COLOR=1 vozltop http://localhost/status/format/json
 | Cache Zones | ZONE / HIT% / MISS / EXPIRED / STALE / USED / IN/s / OUT/s | `cacheZones` |
 | Filter Zones | ZONE (`group/key`) / RPS / 2xx% / 4xx% / 5xx% / p95 / IN/s / OUT/s | `filterZones` |
 
-`Enter` で選択 zone の詳細オーバーレイ (p50 / p95 / p99 + 1 tick ぶんの bucket 別ヒストグラム + responses 内訳) が開く。
+`Enter` で選択 zone の詳細オーバーレイが開く。中身は 3 段:
+
+1. **上段**: p50 / p95 / p99 の数値 (histogram 未設定 zone は `Average request_msec only: ~Nms`)
+2. **中段**: 1 tick 分の bucket 別レイテンシ分布。`<= 5ms  120  35%` のように **1 行 = 1 bucket のテキスト表** (`label / count / 占有率`) で並ぶ (bar 描画は持たない)
+3. **下段**: responses の内訳 (`1xx 0  2xx 3008  3xx 0  4xx 0  5xx 0`)。Cache タブでは `hit / miss / bypass / expired / stale / ...`
+
+> Cache タブの `EXPIRED` 列は表示幅 (5 cells) + 右寄せの都合で実画面上は `PIRED` と表示されます (論理列名は `EXPIRED`)。
 
 ### キー割り当て
 
