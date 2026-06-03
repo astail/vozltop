@@ -983,12 +983,29 @@ fn build_box_title(tab: Tab, visible: usize, total: usize, filter: &str) -> Stri
 }
 
 /// アクティブソート列の見出しに `↓` / `↑` (mono: `v` / `^`) を suffix する。
+/// 既定は左寄せ (text 列 = ZONE 用)。
 fn header_cell_with_sort<'a>(
     label: &'a str,
     col_index: u8,
     sort: SortState,
     theme: &Theme,
 ) -> Cell<'a> {
+    Cell::from(header_text_with_arrow(label, col_index, sort, theme)).style(theme.table_header)
+}
+
+/// 数値列向け右寄せ版。body の `right_aligned(value, col_width)` と右端を揃える
+/// (issue #152: 旧実装は header 左寄せ + body 右寄せで列内の右端がずれていた)。
+fn header_cell_right<'a>(
+    label: &'a str,
+    col_index: u8,
+    sort: SortState,
+    theme: &Theme,
+) -> Cell<'a> {
+    let text = header_text_with_arrow(label, col_index, sort, theme);
+    Cell::from(Line::from(text).right_aligned()).style(theme.table_header)
+}
+
+fn header_text_with_arrow(label: &str, col_index: u8, sort: SortState, theme: &Theme) -> String {
     if sort.column == col_index {
         let arrow = if theme.mono {
             if sort.descending {
@@ -1001,9 +1018,9 @@ fn header_cell_with_sort<'a>(
         } else {
             "↑"
         };
-        Cell::from(format!("{label}{arrow}")).style(theme.table_header)
+        format!("{label}{arrow}")
     } else {
-        Cell::from(label).style(theme.table_header)
+        label.to_string()
     }
 }
 
@@ -1153,13 +1170,13 @@ fn render_server(f: &mut Frame<'_>, app: &App, area: Rect) {
     let header_row = Row::new(vec![
         Cell::from(""),
         header_cell_with_sort("ZONE", 0, app.sort, theme),
-        header_cell_with_sort("RPS", 1, app.sort, theme),
-        header_cell_with_sort("2xx%", 2, app.sort, theme),
-        header_cell_with_sort("4xx%", 3, app.sort, theme),
-        header_cell_with_sort("5xx%", 4, app.sort, theme),
-        header_cell_with_sort("p95", 5, app.sort, theme),
-        header_cell_with_sort("IN/s", 6, app.sort, theme),
-        header_cell_with_sort("OUT/s", 7, app.sort, theme),
+        header_cell_right("RPS", 1, app.sort, theme),
+        header_cell_right("2xx%", 2, app.sort, theme),
+        header_cell_right("4xx%", 3, app.sort, theme),
+        header_cell_right("5xx%", 4, app.sort, theme),
+        header_cell_right("p95", 5, app.sort, theme),
+        header_cell_right("IN/s", 6, app.sort, theme),
+        header_cell_right("OUT/s", 7, app.sort, theme),
         Cell::from(""),
     ])
     .style(theme.table_header.add_modifier(Modifier::UNDERLINED));
@@ -1183,7 +1200,7 @@ fn render_server(f: &mut Frame<'_>, app: &App, area: Rect) {
             Row::new(vec![
                 indicator_cell(is_cursor, alerting, theme),
                 Cell::from(r.zone.clone()),
-                Cell::from(right_aligned(&format_rps(r.rps), 5)),
+                Cell::from(right_aligned(&format_rps(r.rps), 6)),
                 Cell::from(right_aligned(&format_ratio(r.r2xx_pct), 6)),
                 Cell::from(right_aligned(&format_ratio(r.r4xx_pct), 6)),
                 Cell::from(Span::styled(
@@ -1191,7 +1208,7 @@ fn render_server(f: &mut Frame<'_>, app: &App, area: Rect) {
                     r5_style,
                 )),
                 Cell::from(Span::styled(
-                    right_aligned(&format_p95(r.p95), 7),
+                    right_aligned(&format_p95(r.p95), 8),
                     p95_style,
                 )),
                 Cell::from(right_aligned(
@@ -1281,13 +1298,13 @@ fn render_upstream(f: &mut Frame<'_>, app: &App, area: Rect) {
     let header_row = Row::new(vec![
         Cell::from(""),
         header_cell_with_sort("ZONE", 0, app.sort, theme),
-        header_cell_with_sort("RPS", 1, app.sort, theme),
-        header_cell_with_sort("2xx%", 2, app.sort, theme),
-        header_cell_with_sort("4xx%", 3, app.sort, theme),
-        header_cell_with_sort("5xx%", 4, app.sort, theme),
-        header_cell_with_sort("p95", 5, app.sort, theme),
-        header_cell_with_sort("IN/s", 6, app.sort, theme),
-        header_cell_with_sort("OUT/s", 7, app.sort, theme),
+        header_cell_right("RPS", 1, app.sort, theme),
+        header_cell_right("2xx%", 2, app.sort, theme),
+        header_cell_right("4xx%", 3, app.sort, theme),
+        header_cell_right("5xx%", 4, app.sort, theme),
+        header_cell_right("p95", 5, app.sort, theme),
+        header_cell_right("IN/s", 6, app.sort, theme),
+        header_cell_right("OUT/s", 7, app.sort, theme),
         header_cell_with_sort("STATE", 8, app.sort, theme),
     ])
     .style(theme.table_header.add_modifier(Modifier::UNDERLINED));
@@ -1316,7 +1333,7 @@ fn render_upstream(f: &mut Frame<'_>, app: &App, area: Rect) {
             Row::new(vec![
                 indicator_cell(is_cursor, alerting, theme),
                 Cell::from(truncate_middle(&r.zone, zone_render_width)),
-                Cell::from(right_aligned(&format_rps(r.rps), 5)),
+                Cell::from(right_aligned(&format_rps(r.rps), 6)),
                 Cell::from(right_aligned(&format_ratio(r.r2xx_pct), 6)),
                 Cell::from(right_aligned(&format_ratio(r.r4xx_pct), 6)),
                 Cell::from(Span::styled(
@@ -1324,7 +1341,7 @@ fn render_upstream(f: &mut Frame<'_>, app: &App, area: Rect) {
                     r5_style,
                 )),
                 Cell::from(Span::styled(
-                    right_aligned(&format_p95(r.p95), 7),
+                    right_aligned(&format_p95(r.p95), 8),
                     p95_style,
                 )),
                 Cell::from(right_aligned(
@@ -1413,13 +1430,13 @@ fn render_cache(f: &mut Frame<'_>, app: &App, area: Rect) {
     let header_row = Row::new(vec![
         Cell::from(""),
         header_cell_with_sort("ZONE", 0, app.sort, theme),
-        header_cell_with_sort("HIT%", 1, app.sort, theme),
-        header_cell_with_sort("MISS", 2, app.sort, theme),
-        header_cell_with_sort("EXPIRED", 3, app.sort, theme),
-        header_cell_with_sort("STALE", 4, app.sort, theme),
+        header_cell_right("HIT%", 1, app.sort, theme),
+        header_cell_right("MISS", 2, app.sort, theme),
+        header_cell_right("EXPIRED", 3, app.sort, theme),
+        header_cell_right("STALE", 4, app.sort, theme),
         header_cell_with_sort("USED", 5, app.sort, theme),
-        header_cell_with_sort("IN/s", 6, app.sort, theme),
-        header_cell_with_sort("OUT/s", 7, app.sort, theme),
+        header_cell_right("IN/s", 6, app.sort, theme),
+        header_cell_right("OUT/s", 7, app.sort, theme),
     ])
     .style(theme.table_header.add_modifier(Modifier::UNDERLINED));
 
@@ -1523,13 +1540,13 @@ fn render_filter(f: &mut Frame<'_>, app: &App, area: Rect) {
     let header_row = Row::new(vec![
         Cell::from(""),
         header_cell_with_sort("ZONE", 0, app.sort, theme),
-        header_cell_with_sort("RPS", 1, app.sort, theme),
-        header_cell_with_sort("2xx%", 2, app.sort, theme),
-        header_cell_with_sort("4xx%", 3, app.sort, theme),
-        header_cell_with_sort("5xx%", 4, app.sort, theme),
-        header_cell_with_sort("p95", 5, app.sort, theme),
-        header_cell_with_sort("IN/s", 6, app.sort, theme),
-        header_cell_with_sort("OUT/s", 7, app.sort, theme),
+        header_cell_right("RPS", 1, app.sort, theme),
+        header_cell_right("2xx%", 2, app.sort, theme),
+        header_cell_right("4xx%", 3, app.sort, theme),
+        header_cell_right("5xx%", 4, app.sort, theme),
+        header_cell_right("p95", 5, app.sort, theme),
+        header_cell_right("IN/s", 6, app.sort, theme),
+        header_cell_right("OUT/s", 7, app.sort, theme),
         Cell::from(""),
     ])
     .style(theme.table_header.add_modifier(Modifier::UNDERLINED));
@@ -1553,7 +1570,7 @@ fn render_filter(f: &mut Frame<'_>, app: &App, area: Rect) {
             Row::new(vec![
                 indicator_cell(is_cursor, alerting, theme),
                 Cell::from(r.zone.clone()),
-                Cell::from(right_aligned(&format_rps(r.rps), 5)),
+                Cell::from(right_aligned(&format_rps(r.rps), 6)),
                 Cell::from(right_aligned(&format_ratio(r.r2xx_pct), 6)),
                 Cell::from(right_aligned(&format_ratio(r.r4xx_pct), 6)),
                 Cell::from(Span::styled(
@@ -1561,7 +1578,7 @@ fn render_filter(f: &mut Frame<'_>, app: &App, area: Rect) {
                     r5_style,
                 )),
                 Cell::from(Span::styled(
-                    right_aligned(&format_p95(r.p95), 7),
+                    right_aligned(&format_p95(r.p95), 8),
                     p95_style,
                 )),
                 Cell::from(right_aligned(
@@ -3034,8 +3051,9 @@ mod tests {
         let out = draw_cache(&mut app, 100, 5);
         for h in &CACHE_HEADERS {
             // EXPIRED 列は 80 cols で他列を圧迫しないよう Length(5) に縮めて
-            // おり、見出しは `EXPIR` まで切れる (値は完全表示)。
-            let expected = if *h == "EXPIRED" { "EXPIR" } else { *h };
+            // おり、見出しは右寄せ (issue #152) のため左 2 字が切れて `PIRED`
+            // として表示される (値は完全表示)。
+            let expected = if *h == "EXPIRED" { "PIRED" } else { *h };
             assert!(
                 out.contains(expected),
                 "header {expected} missing in:\n{out}"

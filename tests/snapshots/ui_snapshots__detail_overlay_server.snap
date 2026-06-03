@@ -10,7 +10,7 @@ expression: render_to_string(&app)
 "│ OUT  84.0 KB/s   │  tx  1.4 MB                                               │"
 "╰───────────────────┌ zone: api.example.test ──────────────┐───────────────────╯"
 "╭ Server Zones · 4 ─│Average request_msec only: ~0ms       │───────────────────╮"
-"│  ZONE             │           No histogram data          │s      OUT/s       │"
+"│  ZONE             │           No histogram data          │  IN/s     OUT/s   │"
 "│▶ *                │                                      │5 KB/s 84.0 KB/s   │"
 "│  _                │                                      │2 KB/s 29.7 KB/s   │"
 "│  api.example.test │                                      │8 KB/s 29.7 KB/s   │"
