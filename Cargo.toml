@@ -1,6 +1,6 @@
 [package]
 name = "vozltop"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 description = "htop-like real-time TUI for nginx-module-vts"
 repository = "https://github.com/astail/vozltop"
