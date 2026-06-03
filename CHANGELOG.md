@@ -11,9 +11,21 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-04
+
+### Changed
+
+- ヘッダと table を ratatui の rounded box (`╭╮╰╯`、`--no-color` / mono 環境では plain `┌┐└┘`) で囲み、table title を `{TabName} · {count} [· filter "q"]` 形式に変更。列見出しに `↓` / `↑` のソート方向矢印、カーソル行に `▶` マーカーを追加し、アラートや `5xx>0` の着色はセル単位に限定した。タイトル行には ● ステータスドット + host + uptime を表示する (closes #150) (#151)
+- ヘッダの `RPS` / `IN` / `OUT` から bar 表示を撤廃し、数値のみの右寄せ表記に統一。詳細オーバーレイの histogram も横向き bar の描画を廃止して、3 セクション (`Latency` / `Status codes` / `Buckets`) のテキスト表記に整理した。`EXPIRED` ラベルが詰まる cell 幅で `PIRED` のように先頭が欠落する既知の挙動については追跡継続 (closes #152) (#153)
+- 詳細オーバーレイの histogram から p95 バケットを示す `▶` マーカーを削除し、純粋なバケット分布として描画する (closes #147) (#148)
+
+### Documentation
+
+- README (日本語版 / 英語版) と `docs/DESIGN.md` を現状の TUI に合わせて更新。bar 撤廃後のヘッダ図、右寄せされた数値列、Filter タブの記述、rounded box の枠線などを反映した (closes #154)
+
 ### Security
 
-- 依存クレート `ratatui` を 0.29 → 0.30 に更新。transitive で混入していた `paste 1.0.15` (RUSTSEC-2024-0436: unmaintained) と `lru 0.12.5` (RUSTSEC-2026-0002: `IterMut` Stacked Borrows 違反) を同時に解消する。`ratatui 0.30` で `paste` 依存は drop され、`lru` は patched 済みの 0.16.x にバンプされた。vozltop 側は `Sparkline::data(&[u64])` / `Paragraph::alignment(Alignment::*)` が 0.30 でも互換のためソース変更は不要 (#144, #145)
+- 依存クレート `ratatui` を 0.29 → 0.30 に更新。transitive で混入していた `paste 1.0.15` (RUSTSEC-2024-0436: unmaintained) と `lru 0.12.5` (RUSTSEC-2026-0002: `IterMut` Stacked Borrows 違反) を同時に解消する。`ratatui 0.30` で `paste` 依存は drop され、`lru` は patched 済みの 0.16.x にバンプされた。vozltop 側は `Sparkline::data(&[u64])` / `Paragraph::alignment(Alignment::*)` が 0.30 でも互換のためソース変更は不要 (#144, #145, #149)
 
 ## [0.3.1] - 2026-06-02
 
@@ -112,7 +124,8 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 - argv に password / Bearer トークンが平文で乗っていると起動時に stderr で警告するようにした (`ps` 経由の漏洩を防ぐ案内) (#40)
 - URL に埋め込んだ credentials (`https://user:pass@host/...`) を `detect_argv_secret_in` の警告対象に追加。これまで `--user` / `--header` しか検査しておらず、URL 内 password が `ps` で漏洩しても無警告だった。URL 形式は `VOZLTOP_PASSWORD` でも上書きされないため env がセットされていても警告する (closes #107)
 
-[unreleased]: https://github.com/astail/vozltop/compare/v0.3.1...HEAD
+[unreleased]: https://github.com/astail/vozltop/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/astail/vozltop/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/astail/vozltop/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/astail/vozltop/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/astail/vozltop/compare/v0.2.0...v0.2.1
