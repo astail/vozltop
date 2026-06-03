@@ -5,12 +5,13 @@
 //!
 //! 1. **上段**: `p50 / p95 / p99` の数値。histogram 未設定 zone は
 //!    `Average request_msec only` の 1 行に置き換える。
-//! 2. **中段**: 1 tick 分の bucket 別件数 (PDF) を 1 行 1 bucket の横向き
-//!    バーで可視化する。vts の `requestBuckets.counters` は累積 (CDF) で返るので、
-//!    隣接 bucket 間の差分を取って「その bucket レンジに入った件数」に変換してから
-//!    描画する (issue #134)。
+//! 2. **中段**: 1 tick 分の bucket 別件数 (PDF) を 1 行 1 bucket のテキスト表
+//!    (`<label>  <count>  <pct>`) で表示する。vts の `requestBuckets.counters` は
+//!    累積 (CDF) で返るので、隣接 bucket 間の差分を取って「その bucket レンジに
+//!    入った件数」に変換してから描画する (issue #134)。
 //!    軸ラベルは `requestBuckets.msecs` から実行時に組み立てる (ハードコード禁止)。
 //!    histogram なし zone は `No histogram data` に置き換える。
+//!    (旧 sub-cell smooth bar は issue #152 で撤廃。)
 //! 3. **下段**: 各レスポンス分類のカウント (`1xx`〜`5xx` の累積値)。
 //!    cache zone は `hit / miss / bypass / expired / stale / updating / revalidated / scarce`。
 //!
@@ -41,7 +42,7 @@ pub struct DetailView {
     pub zone: String,
     /// p50 / p95 / p99 のセット。histogram なし zone では全 `Average` か `NoData`。
     pub percentiles: PercentileTriple,
-    /// 中段の横向きバー用データ。`None` なら「No histogram data」メッセージを出す。
+    /// 中段のテキスト表用データ。`None` なら「No histogram data」メッセージを出す。
     pub histogram: Option<HistogramBars>,
     /// 下段の「responses ラベル: 値」一覧。Server/Upstream は 1xx-5xx、
     /// Cache は hit/miss 系。表示順は固定。
@@ -56,14 +57,13 @@ pub struct PercentileTriple {
     pub p99: PercentileResult,
 }
 
-/// 横向きバー描画に渡す `(label, value)` の組と最大値。
+/// 中段テキスト表に渡す `(label, value)` の組 (issue #152 で bar 撤廃)。
 ///
 /// label は `requestBuckets.msecs[i]` から `<=N` の形で組み立てる
 /// (`msecs` を超えた最終 bucket は `>N`)。
 #[derive(Debug, Clone, PartialEq)]
 pub struct HistogramBars {
     pub bars: Vec<(String, u64)>,
-    pub max: u64,
 }
 
 // ---------- build ----------
@@ -252,10 +252,10 @@ fn find_upstream<'a>(s: &'a VtsStatus, group: &str, server: &str) -> Option<&'a 
         .and_then(|servers| servers.iter().find(|x| x.server == server))
 }
 
-/// histogram あり/なしで分岐した percentile 群と bar 群を返す。
+/// histogram あり/なしで分岐した percentile 群と bucket 群を返す。
 ///
 /// - histogram あり (`now.msecs` 非空): `prev` があれば差分から p50/p95/p99 と
-///   bar delta を組み立てる。`prev` 不在 (初 tick) は p* は `NoData`、bars は
+///   bucket delta を組み立てる。`prev` 不在 (初 tick) は p* は `NoData`、bars は
 ///   現在の `counters` 累積値そのまま (delta 不能だが「histogram の形」を見せる
 ///   ためにフォールバック値を載せる)。
 /// - histogram なし: p* は `Average(request_msec)` を 3 つ並べる
@@ -325,8 +325,7 @@ fn bars_from_buckets(now: &Buckets, prev: Option<&Buckets>) -> HistogramBars {
         let label = bucket_label(&now.msecs, i);
         bars.push((label, bin));
     }
-    let max = bars.iter().map(|(_, v)| *v).max().unwrap_or(0);
-    HistogramBars { bars, max }
+    HistogramBars { bars }
 }
 
 /// `requestBuckets.msecs` から bucket の表示 label を組み立てる。
@@ -453,13 +452,14 @@ fn top_paragraph<'a>(view: &'a DetailView, app: &App) -> Paragraph<'a> {
     Paragraph::new(line).alignment(Alignment::Left)
 }
 
-/// 中段 (横向きバー or 「No histogram data」)。
+/// 中段 (テキスト表 or 「No histogram data」)。
 ///
-/// 各 bucket を 1 行で `<label> <bar> <count> <pct>` の形に並べる。
-/// 中段の高さに bucket が収まらない場合は末尾を `(+N more)` (DIM) に置換する。
+/// 各 bucket を 1 行で `<label> <count> <pct>` の形に並べる (issue #152 で
+/// 旧 sub-cell smooth bar を撤廃)。中段の高さに bucket が収まらない場合は
+/// 末尾を `(+N more)` (DIM) に置換する。
 fn render_middle(f: &mut Frame<'_>, view: &DetailView, area: Rect) {
     match &view.histogram {
-        Some(h) => render_horizontal_bars(f, h, area),
+        Some(h) => render_histogram_table(f, h, area),
         None => {
             let p = Paragraph::new(Line::from(Span::styled(
                 "No histogram data",
@@ -477,11 +477,8 @@ const LABEL_WIDTH: usize = 7;
 const COUNT_WIDTH: usize = 7;
 /// `<pct>` の右寄せ幅 (`100%`)。
 const PCT_WIDTH: usize = 4;
-/// 行固定枠の合計幅 (空白セパレータ込み)。
-/// " " + label + " " + " " + count + " " + pct
-const FIXED_OVERHEAD: usize = 1 + LABEL_WIDTH + 1 + 1 + COUNT_WIDTH + 1 + PCT_WIDTH;
 
-fn render_horizontal_bars(f: &mut Frame<'_>, h: &HistogramBars, area: Rect) {
+fn render_histogram_table(f: &mut Frame<'_>, h: &HistogramBars, area: Rect) {
     if area.height == 0 || area.width == 0 {
         return;
     }
@@ -489,18 +486,15 @@ fn render_horizontal_bars(f: &mut Frame<'_>, h: &HistogramBars, area: Rect) {
     let visible_rows = (area.height as usize).min(h.bars.len());
     let truncated = h.bars.len() > visible_rows;
     // truncate するときは最後の 1 行を `(+N more)` で消費する。
-    let bar_rows = if truncated && visible_rows > 0 {
+    let body_rows = if truncated && visible_rows > 0 {
         visible_rows - 1
     } else {
         visible_rows
     };
-    // 残幅 = area.width - FIXED_OVERHEAD。マイナスや 0 のときは bar 文字列が
-    // 空になるだけで他列は出る。
-    let bar_width = (area.width as usize).saturating_sub(FIXED_OVERHEAD);
 
-    for i in 0..bar_rows {
+    for i in 0..body_rows {
         let (label, value) = &h.bars[i];
-        let line = format_bar_line(label, *value, h.max, total, bar_width);
+        let line = format_row(label, *value, total);
         let rect = Rect {
             x: area.x,
             y: area.y + i as u16,
@@ -511,10 +505,10 @@ fn render_horizontal_bars(f: &mut Frame<'_>, h: &HistogramBars, area: Rect) {
     }
 
     if truncated && visible_rows > 0 {
-        let remaining = h.bars.len() - bar_rows;
+        let remaining = h.bars.len() - body_rows;
         let rect = Rect {
             x: area.x,
-            y: area.y + bar_rows as u16,
+            y: area.y + body_rows as u16,
             width: area.width,
             height: 1,
         };
@@ -527,15 +521,8 @@ fn render_horizontal_bars(f: &mut Frame<'_>, h: &HistogramBars, area: Rect) {
 }
 
 /// 1 行ぶんの `Line` を組み立てる。
-/// 形: ` <label:LABEL_WIDTH> <bar> <count:COUNT_WIDTH> <pct:PCT_WIDTH>`
-fn format_bar_line<'a>(
-    label: &str,
-    value: u64,
-    max: u64,
-    total: u64,
-    bar_width: usize,
-) -> Line<'a> {
-    let bar = fill_bar(value, max, bar_width);
+/// 形: ` <label:LABEL_WIDTH>  <count:COUNT_WIDTH>  <pct:PCT_WIDTH>`
+fn format_row<'a>(label: &str, value: u64, total: u64) -> Line<'a> {
     let pct = if total == 0 {
         "0%".to_string()
     } else {
@@ -543,49 +530,15 @@ fn format_bar_line<'a>(
         format!("{}%", p.round() as u64)
     };
     let text = format!(
-        " {label:<lw$} {bar} {value:>cw$} {pct:>pw$}",
+        " {label:<lw$}  {value:>cw$}  {pct:>pw$}",
         label = label,
         lw = LABEL_WIDTH,
-        bar = bar,
         value = value,
         cw = COUNT_WIDTH,
         pct = pct,
         pw = PCT_WIDTH,
     );
     Line::from(Span::raw(text))
-}
-
-/// `value/max` に比例した長さの Unicode block 列を `width` チャラ分組み立てる。
-///
-/// sub-character の精度は eighths block (`▏▎▍▌▋▊▉`) + 全幅 `█`。
-/// `max == 0` / `value == 0` / `width == 0` のときは空白で埋める。
-/// `value >= max` で完全に塗りつぶす。
-fn fill_bar(value: u64, max: u64, width: usize) -> String {
-    if width == 0 {
-        return String::new();
-    }
-    if max == 0 || value == 0 {
-        return " ".repeat(width);
-    }
-    const EIGHTHS: [char; 7] = ['▏', '▎', '▍', '▌', '▋', '▊', '▉'];
-    let total_eighths_max = (width as u128) * 8;
-    let total_eighths =
-        ((value as u128 * total_eighths_max) / (max as u128)).min(total_eighths_max) as usize;
-    let full = total_eighths / 8;
-    let rem = total_eighths % 8;
-    let mut s = String::with_capacity(width * 3);
-    for _ in 0..full {
-        s.push('█');
-    }
-    let mut drawn = full;
-    if rem > 0 && full < width {
-        s.push(EIGHTHS[rem - 1]);
-        drawn += 1;
-    }
-    for _ in drawn..width {
-        s.push(' ');
-    }
-    s
 }
 
 /// 下段 (responses ラベル / 値)。
@@ -765,10 +718,9 @@ mod tests {
         // 最終 bucket は ">" プレフィックス
         assert_eq!(h.bars[4].0, ">500");
         // PDF 化 (issue #134): vts は CDF を返すので隣接 bucket 差分を取った
-        // 値 ([10, 50-10, 100-50, 150-100, 200-150]) が bar value になる。
+        // 値 ([10, 50-10, 100-50, 150-100, 200-150]) が bucket value になる。
         let values: Vec<u64> = h.bars.iter().map(|(_, v)| *v).collect();
         assert_eq!(values, vec![10, 40, 50, 50, 50]);
-        assert_eq!(h.max, 50);
         // responses は累積で 2xx=100 が見える
         assert!(v.responses.contains(&("2xx", 100)));
     }
@@ -849,7 +801,6 @@ mod tests {
             .expect("histogram present");
         let values: Vec<u64> = h.bars.iter().map(|(_, v)| *v).collect();
         assert_eq!(values, vec![100, 0, 0, 0, 0]);
-        assert_eq!(h.max, 100);
     }
 
     #[test]
@@ -903,7 +854,7 @@ mod tests {
 
     #[test]
     fn render_with_histogram_shows_p_labels_and_zone_title() {
-        // 受け入れ条件: histogram あり zone で Enter → 横向きバーが出る
+        // 受け入れ条件: histogram あり zone で Enter → bucket テキスト表が出る
         let prev = status_with_server_zones(
             1000,
             &[(
@@ -934,11 +885,18 @@ mod tests {
         assert!(out.contains("p50"), "p50 missing:\n{out}");
         assert!(out.contains("p95"), "p95 missing:\n{out}");
         assert!(out.contains("p99"), "p99 missing:\n{out}");
-        // 中段に「No histogram data」が出ていないこと (= バーが出ている)
+        // 中段に「No histogram data」が出ていないこと (= bucket 表が出ている)
         assert!(
             !out.contains("No histogram data"),
             "should not show 'No histogram data' when buckets present:\n{out}"
         );
+        // issue #152: 中段に sub-cell smooth bar (`█▉▊▋▌▍▎▏`) は描画されない。
+        for ch in ['█', '▉', '▊', '▋', '▌', '▍', '▎', '▏'] {
+            assert!(
+                !out.contains(ch),
+                "smooth bar glyph {ch:?} should not appear in detail middle:\n{out}"
+            );
+        }
         // 下段の responses ラベル
         assert!(out.contains("2xx"), "responses 2xx missing:\n{out}");
     }
@@ -1004,10 +962,10 @@ mod tests {
         let _ = draw(&app, 80, 24);
     }
 
-    // ---------- horizontal bars ----------
+    // ---------- histogram table (issue #152) ----------
 
     #[test]
-    fn render_middle_shows_horizontal_rows_with_counts_and_pct() {
+    fn render_middle_shows_histogram_table_with_counts_and_pct() {
         // prev=0, now=[20, 60, 100] cumulative over [10, 50, 100] →
         // PDF = [20, 40, 40], total = 100. 各行に count と % が並ぶことを確認する。
         let prev = status_with_server_zones(
@@ -1041,7 +999,7 @@ mod tests {
             !out.contains('▶'),
             "▶ marker should not be rendered:\n{out}"
         );
-        // 横向きバーの行は label + count + pct を含む
+        // 中段テキスト表の行は label + count + pct を含む
         let lines: Vec<&str> = out.lines().collect();
         let row_le10 = lines.iter().find(|l| l.contains("<=10")).expect("<=10 row");
         assert!(
@@ -1064,7 +1022,7 @@ mod tests {
     }
 
     #[test]
-    fn render_middle_renders_empty_bar_for_zero_value() {
+    fn render_middle_renders_zero_count_row_without_panic() {
         // 全 bucket が 0 のときも panic せず描画される。
         // prev と now で counter が動かない場合: PDF も全て 0。
         let prev = status_with_server_zones(

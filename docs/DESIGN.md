@@ -14,7 +14,7 @@
 
 ### レイアウト: htop 風 1 テーブル
 
-- 上部にサマリ（接続数ゲージ、総 RPS スパークライン、5xx 率、BW スパークライン）
+- 上部にサマリ（接続数 / 総 RPS / IN / OUT を数値表示。issue #150 で Gauge / Sparkline を、issue #152 で smooth bar を撤去済）
 - 下部に並び替え可能テーブル 1 つ
 - Tab で zone 種別（Server / Upstream / Cache）切替
 
@@ -213,11 +213,12 @@ hit% = hit / (hit + miss + bypass + expired + stale + updating + revalidated + s
 ## UI レイアウト
 
 ```
-┌─ vozltop ─────────────────────────────────────────────────┐
+╭─ ● vozltop · up 3d 14h ───────────────────────────────────╮
 │ Conn  active 142  reading 3  writing 12  waiting 127      │  ← header.rs
-│ RPS   ████████████░░░░░░░░                          1,284  │     (4 row)
-│ in    ▇▇▇▇▇▇▂                                  12.4 MB/s  │
-│ out   ▇▇▇▇▇▇▇▇▇                                  84 MB/s  │
+│ ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄ │     (5 row)
+│ RPS   1,284/s              │  req 8.42 M                  │
+│ IN    12.4 MB/s            │  rx  3.10 GB                 │
+│ OUT   84 MB/s              │  tx  18.9 GB                 │
 ├────────────────────────────────────────────────────────────┤
 │ [Server] Upstream  Cache                                  │  ← tab bar
 ├────────────────────────────────────────────────────────────┤
@@ -230,22 +231,21 @@ hit% = hit / (hit + miss + bypass + expired + stale + updating + revalidated + s
 └────────────────────────────────────────────────────────────┘
 ```
 
-- 接続数 Gauge の max は JSON から取得不能（`worker_connections` が無い）ため、**起動後に観測された `connections.active` の rolling-max を最大値として auto-scale** する。
-- RPS / BW の Sparkline は最新 120 スナップショット（1s 間隔で 2 分相当）を保持。
+- ヘッダの Conn / RPS / IN / OUT はいずれも数値のみ表示 (issue #150 で Gauge / Sparkline を撤去、issue #152 で smooth bar も撤去)。タイトル行に ● ステータスドット + host + uptime を集約。
 - F2 Setup と F3 は v1 未実装。footer には掲載しない。
 
 Enter で中央 50% に詳細オーバーレイ:
 
 ```
-        ┌─ api.example.com ──────────────────────┐
+        ┌─ zone: api.example.com ────────────────┐
         │ p50  18ms   p95  38ms   p99  142ms     │
-        │                                        │
-        │     ▁▂▃▆█▇▅▃▂▁                         │  ← BarChart (buckets)
-        │  5  10  25  50  100  250  500  1000 ms │     ← 軸ラベルは
-        │                                        │       requestBuckets.msecs から
-        │                                        │       実行時に生成（ハードコードしない）
+        │  <=5         120    12%                │  ← bucket テキスト表 (issue #152)
+        │  <=10         85     9%                │     軸ラベルは requestBuckets.msecs
+        │  <=50        300    31%                │     から実行時に生成
+        │  <=100       240    25%                │     (ハードコードしない)
+        │  <=500       150    16%                │
+        │  >1000        12     1%                │
         │ 1xx 0   2xx 822  3xx 12  4xx 6  5xx 2  │
-        │                                        │
         │ Esc / Enter to close                   │
         └────────────────────────────────────────┘
 ```
