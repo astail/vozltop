@@ -11,7 +11,14 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-06-04
+## [0.4.1] - 2026-06-05
+
+### Fixed
+
+- 引数なしで `vozltop` を起動した場合に `MissingRequiredArgument` のエラーで終了していた挙動を改善し、`--help` と同等の usage を stdout に表示して exit 0 で終了するようにした。`#[command(arg_required_else_help = true)]` を `Args` に付与し、clap が返す `DisplayHelpOnMissingArgumentOrSubcommand` kind を `parse_with_config` 側で正常表示扱いとして処理する (closes #156)
+- clap の parse error が color-eyre の Report に包まれて `Location:` / `Backtrace omitted.` が付いた読みづらいスタックトレース風表示になっていた問題を修正。`Args::parse_with_config()` を `run()` から `main()` に引き上げ、`ConfigArgsError::Clap(e)` は `e.exit()` (clap 本来のフォーマット)、`ConfigArgsError::Config(e)` は `vozltop: <msg>` 1 行に流すように整理した。color-eyre Report は raw mode 起動後の予期せぬ失敗にだけ使う (#156)
+
+
 
 ### Changed
 
@@ -124,7 +131,8 @@ PR を出すときは、変更点を該当する [Unreleased](#unreleased) の�
 - argv に password / Bearer トークンが平文で乗っていると起動時に stderr で警告するようにした (`ps` 経由の漏洩を防ぐ案内) (#40)
 - URL に埋め込んだ credentials (`https://user:pass@host/...`) を `detect_argv_secret_in` の警告対象に追加。これまで `--user` / `--header` しか検査しておらず、URL 内 password が `ps` で漏洩しても無警告だった。URL 形式は `VOZLTOP_PASSWORD` でも上書きされないため env がセットされていても警告する (closes #107)
 
-[unreleased]: https://github.com/astail/vozltop/compare/v0.4.0...HEAD
+[unreleased]: https://github.com/astail/vozltop/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/astail/vozltop/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/astail/vozltop/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/astail/vozltop/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/astail/vozltop/compare/v0.2.1...v0.3.0
