@@ -44,7 +44,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{interval, MissedTickBehavior};
 
-use vozltop::cli::Args;
+use vozltop::cli::{Args, ConfigArgsError};
 use vozltop::client::{FetchError, VtsClient};
 use vozltop::event::{map_event, AppEvent};
 use vozltop::model::VtsStatus;
@@ -55,7 +55,24 @@ use vozltop::ui;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
-    if let Err(err) = run().await {
+    if let Err(e) = color_eyre::install() {
+        eprintln!("vozltop: failed to install error reporter: {e}");
+        return ExitCode::FAILURE;
+    }
+
+    // CLI パース / config 解決のエラーは raw mode 前に処理する。clap の
+    // standard error (色付き usage + `try '--help'`) をそのまま見せ、
+    // color-eyre の Report (`Location: ...` + Backtrace hint) は付けない。
+    let args = match Args::parse_with_config() {
+        Ok(a) => a,
+        Err(ConfigArgsError::Clap(e)) => e.exit(),
+        Err(ConfigArgsError::Config(e)) => {
+            eprintln!("vozltop: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if let Err(err) = run(args).await {
         // run() 内で raw mode 中に Err が返ってきても、run() 末尾で restore は
         // 走っている前提。それでも保険として再度 restore する (冪等)。
         term::restore();
@@ -65,12 +82,7 @@ async fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-async fn run() -> Result<()> {
-    color_eyre::install()?;
-    // issue #46: TOML config を読み、`@alias` を URL + 各フラグに展開してから
-    // 通常の clap parse を実行する。alias を使わなければ従来と完全に同じ動作。
-    let args = Args::parse_with_config().map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
-
+async fn run(args: Args) -> Result<()> {
     // CLI / HTTP セットアップは TUI 起動前に済ませる。ここで失敗した場合は
     // raw mode に入っていないので restore 不要。
     let theme = Theme::from_args(&args);
