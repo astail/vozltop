@@ -57,6 +57,12 @@ pub const MAX_INTERVAL_SECS: f64 = 60.0;
     version,
     about = "htop-like real-time TUI for nginx-module-vts",
     long_about = None,
+    // 引数完全に無し (= `vozltop` のみ) で起動された場合は、`<URL>...` が
+    // 足りないという素っ気ないエラーではなく `--help` を出して exit 0 する。
+    // URL を伴わない他フラグだけ (例: `vozltop --insecure`) のときは従来通り
+    // MissingRequiredArgument エラーを返す (= 意図して何かを指定したのに URL
+    // を忘れたケースは「忘れもの」として報告する方が親切)。
+    arg_required_else_help = true,
 )]
 pub struct Args {
     /// nginx-vts の `/status/format/json` などを指す絶対 URL。
@@ -209,8 +215,18 @@ impl Args {
                 // それ以外の parse error は従来通り ConfigArgsError::Clap で返し、
                 // main.rs 側の color-eyre フォーマッタに任せる。
                 use clap::error::ErrorKind;
-                if matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) {
-                    e.exit();
+                match e.kind() {
+                    // `--help` / `--version` は clap が exit 0 + stdout で扱う。
+                    ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => e.exit(),
+                    // `arg_required_else_help` で help を出すケース。clap 既定の
+                    // `Error::exit()` だとこの kind は exit 2 になるが、引数なし
+                    // 起動で help を見せるのは「正常な情報表示」なので exit 0 で
+                    // 抜けたい。`e.print()` (= stdout) → `process::exit(0)`。
+                    ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
+                        let _ = e.print();
+                        std::process::exit(0);
+                    }
+                    _ => {}
                 }
                 Err(e.into())
             }
@@ -736,8 +752,23 @@ mod tests {
     }
 
     #[test]
-    fn args_requires_url() {
+    fn args_with_no_args_shows_help() {
+        // 完全な引数なし起動は `arg_required_else_help` 経由で help 表示。
+        // clap 上は `DisplayHelpOnMissingArgumentOrSubcommand` Err として返る
+        // (`--help` フラグでの help と区別される)。main 側でこの kind を見て
+        // stdout 出力 + exit 0 に上書きしている。
         let err = try_parse(&["vozltop"]).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        );
+    }
+
+    #[test]
+    fn args_with_only_flags_still_requires_url() {
+        // URL 以外のフラグだけ指定された場合 (= 何か入力する気はあったが URL を
+        // 忘れたケース) は従来どおり MissingRequiredArgument エラー。
+        let err = try_parse(&["vozltop", "--insecure"]).unwrap_err();
         assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
     }
 
