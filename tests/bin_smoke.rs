@@ -61,17 +61,42 @@ fn help_flag_exits_zero_with_usage_on_stdout() {
 }
 
 #[test]
-fn missing_required_url_exits_nonzero() {
-    // 正常系の対照として、引数なし起動は今まで通り失敗することも確認する。
-    // (DisplayHelp / DisplayVersion 以外の clap::Error を `e.exit()` に流して
-    // しまっていないかのリグレッション検出。)
+fn no_args_shows_help_and_exits_zero() {
+    // `#[command(arg_required_else_help = true)]` により、引数完全になしの
+    // 起動は素っ気ない MissingRequiredArgument エラーではなく `--help` と同じ
+    // usage を stdout に出して exit 0 する (PR #156)。
     let output = Command::new(vozltop_bin())
         .output()
         .expect("vozltop (no args) should spawn");
 
     assert!(
+        output.status.success(),
+        "引数なしは help 表示で exit 0 のはず。\nstatus={:?}\nstderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Usage:"),
+        "引数なし時の stdout には clap の Usage 行が含まれるはず。\n実際の stdout: {stdout:?}",
+    );
+}
+
+#[test]
+fn missing_url_with_other_flag_exits_nonzero() {
+    // URL を伴わない他フラグだけ (例: `vozltop --insecure`) のときは従来通り
+    // MissingRequiredArgument エラーで非ゼロ exit。これにより DisplayHelp /
+    // DisplayVersion / DisplayHelpOnMissingArgumentOrSubcommand 以外の
+    // clap::Error をうっかり exit 0 に流していないかをリグレッション検出する。
+    let output = Command::new(vozltop_bin())
+        .arg("--insecure")
+        .output()
+        .expect("vozltop --insecure (no URL) should spawn");
+
+    assert!(
         !output.status.success(),
-        "URL 未指定時は失敗するはず。実際は exit {:?}",
+        "URL 無しでフラグだけ指定は失敗するはず。実際は exit {:?}",
         output.status.code(),
     );
 }
