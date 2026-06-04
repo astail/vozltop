@@ -218,12 +218,14 @@ impl Args {
                 match e.kind() {
                     // `--help` / `--version` は clap が exit 0 + stdout で扱う。
                     ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => e.exit(),
-                    // `arg_required_else_help` で help を出すケース。clap 既定の
-                    // `Error::exit()` だとこの kind は exit 2 になるが、引数なし
-                    // 起動で help を見せるのは「正常な情報表示」なので exit 0 で
-                    // 抜けたい。`e.print()` (= stdout) → `process::exit(0)`。
+                    // `arg_required_else_help` で help を出すケース。clap は
+                    // この kind を「失敗扱い」とみなし `Error::print()` は stderr
+                    // に出して `exit()` は 2 を返すが、本ツールでは引数なし起動の
+                    // help 表示は `--help` と同じ「正常な情報表示」として扱いたい。
+                    // `Display` impl は help テキストそのものを返すので stdout に
+                    // 直接書いて exit 0 で抜ける。
                     ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
-                        let _ = e.print();
+                        print!("{e}");
                         std::process::exit(0);
                     }
                     _ => {}
