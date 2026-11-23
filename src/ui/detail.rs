@@ -492,8 +492,7 @@ fn render_histogram_table(f: &mut Frame<'_>, h: &HistogramBars, area: Rect) {
         visible_rows
     };
 
-    for i in 0..body_rows {
-        let (label, value) = &h.bars[i];
+    for (i, (label, value)) in h.bars.iter().take(body_rows).enumerate() {
         let line = format_row(label, *value, total);
         let rect = Rect {
             x: area.x,
